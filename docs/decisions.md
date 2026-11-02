@@ -94,3 +94,79 @@
 - **理由**：与任务书 §4.1 resources_seen 示例键名对齐。
 - **影响**：project JSON 的 resources_seen 键集合可能超出任务书示例
   （仅新增 _failed 后缀类）。
+
+## Phase 2 —— MENU / DIALOG / DFM 适配器
+
+### D030 MENUEX 头部没有独立的 dwHelpId 字段（与 Wine 不同）
+- **决策**：MENUEX 头 = WORD version + WORD offset + offset 字节扩展
+  （扩展内容即 dwHelpId 等）；读完扩展直接开始项流。**不**像 Wine
+  `LoadMenuIndirectW` 那样再读 4 字节 dwHelpId。
+- **理由**：按 Wine 实现解析真实资源全部错位；修正后 195 个本机系统
+  程序的真实 MENUEX 资源 100% 字节还原，且手工构造的 MENUEX 能被
+  真实 `LoadMenuW` 加载。
+- **影响**：docs/formats/MENU.md 记录差异；ReactOS 同源代码同样多读。
+
+### D031 MENUEX 布局的穷举验证方法
+- **决策**：对"flags 位宽 × 前后对齐 × helpid 位置 × 头扩展"共 72 种
+  参数组合做穷举，以"精确消费 + 字节还原全部 195 个真实资源"为判据
+  锁定唯一布局族。
+- **理由**：MS Learn 已无 MENUEX 二进制格式文档，Wine 实现与真实文件
+  不符；穷举是可复现、无歧义的裁定方式。
+- **影响**：build/ 下的搜索脚本不入库；方法记录于 docs/formats/MENU.md。
+
+### D032 DFM 子对象没有 0xFF 前缀（与常见描述不同）
+- **决策**：普通子对象直接以类名长度字节开始；仅 `$F0|flags` 高 nibble
+  命中才视为前缀（inherited/inline/ffChildPos）。
+- **理由**：本机 Inno（Delphi 系）与 Cheat Engine（Lazarus 系）两套
+  写入方的真实 DFM 中子对象均无 0xFF；`TReader.ReadPrefix` 的判定
+  `b & 0xF0 == 0xF0` 与"类名长度恒小于 0x10"不冲突。
+- **影响**：解析器同时兼容有/无前缀两种形态，前缀字节原样保留。
+
+### D033 DFM 的 TStrings 属性 = 带点属性名 + vaList
+- **决策**：`Lines.Strings` 以**单个带点属性名**存储，值类型 vaList，
+  列表项 = 类型字节 + 值。
+- **理由**：TWizardForm 真实样本逐字节验证。
+- **影响**：提取白名单按 `.Strings` 后缀与裸名 `Lines`/`Items` 双轨匹配。
+
+### D034 vaCollection 采用保守解析
+- **决策**：每项 = 可选顺序号(vaInt8/16/32) + 可选 0x01 标记 + 属性体
+  （0x00 终止）；顺序号与 0x01 标记的有无**按原文件保留**。
+- **理由**：Delphi TWriter 标准输出带 0x01；不假设其他写入方一致，
+  round-trip 优先。
+- **影响**：serialize 按解析到的原始形态重建。
+
+### D035 真实资源样本提交 tests/fixtures/
+- **决策**：7 个小样本（2×Inno DFM、2×Lazarus DFM、3×MENUEX，
+  共约 18KB）随仓库分发作为 round-trip 测试基线。
+- **理由**：测试必须自包含（fresh clone 可跑）；这些是几 KB 的结构
+  数据，类似 Wine 测试的做法。
+- **影响**：.gitignore 的 build/ 排除不影响 tests/fixtures/。
+
+### D036 标准 DLGTEMPLATE 字体块只有 pointsize + typeface
+- **决策**：非 EX 模板按 2 字段解析字体块；weight/italic/charset 仅
+  EX 模板存在。EX 的 pointsize==0x7FFF 表示消息框字体（其后无字段）。
+- **理由**：MS 文档 + Wine `DIALOG_ParseTemplate32` 一致；windres 产物
+  round-trip 验证。
+- **影响**：字体补丁对标准模板只替换 typeface（无 charset 可写）。
+
+### D037 DFM Entry id 的 position 段 = 属性路径
+- **决策**：按任务书 §4.2，DFM 的 id 形如
+  `RT_RCDATA/<name>/<lang>/Form1/Lines/3`；apply 按完整路径段匹配
+  （不用先序号）。
+- **理由**：任务书明文要求；路径对同一 exe 天然稳定。
+- **影响**：同 DFM 内对象名重复时可能撞路径（Delphi 组件名唯一，
+  实际不发生）；`_position_of` 取第三段之后全部。
+
+### D038 ANSI 解码失败 → 记录 skipped 条目（非静默丢弃）
+- **决策**：vaString/vaLString 无法按 GBK 解码时，仍生成
+  status=skipped 的条目（skip_reason=ANSI(GBK) 解码失败）。
+- **理由**：任务书 §5.4 "转换失败则 skipped"；静默丢弃会让用户看不到
+  该属性存在。
+- **影响**：回写时 skipped 条目不参与写入，原文保持。
+
+### D039 对话框控件对齐基准 = 资源起始
+- **决策**：控件的 DWORD 对齐以**资源数据起始**为 0 基准（适配器只见
+  字节流，无从得知节内偏移）。
+- **理由**：RC/ windres 产物资源数据在节内 4 字节对齐，此时与加载器
+  的运行时对齐一致；极端非对齐资源（罕见）会有偏差，记录为已知限制。
+- **影响**：fixture 构建器同样按全长对齐（头 18/26 字节计入）。

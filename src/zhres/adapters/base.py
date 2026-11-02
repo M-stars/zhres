@@ -109,11 +109,16 @@ class AdapterRegistry:
 
 def build_default_registry() -> AdapterRegistry:
     """注册 v1 全部内置适配器。"""
+    from .dialog import DialogAdapter
+    from .dfm import DfmAdapter
+    from .menu import MenuAdapter
     from .stringtable import StringTableAdapter
 
     reg = AdapterRegistry()
     reg.register(StringTableAdapter())
-    # Phase 2 将在此注册 menu / dialog / dfm
+    reg.register(MenuAdapter())
+    reg.register(DialogAdapter())
+    reg.register(DfmAdapter())
     return reg
 
 
