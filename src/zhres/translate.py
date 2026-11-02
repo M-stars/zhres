@@ -52,12 +52,14 @@ def translate_project(project: Project, *,
                       glossary: Glossary | None = None,
                       llm=None,
                       batch_size: int = 20,
-                      dry_run: bool = False) -> TranslateResult:
+                      dry_run: bool = False,
+                      save_callback=None) -> TranslateResult:
     """按合并优先级填充译文。
 
     llm: 可调用 ``fill(entries: list[Entry]) -> dict[id, translation]``，
-    由 llm.py 提供（Phase 4）；None 表示离线模式。
+    由 llm.py 提供；None 表示离线模式。
     dry_run: 只打印将发生的动作，不修改工程。
+    save_callback: LLM 每批成功后调用（断点续跑：原子写工程 JSON）。
     """
     if glossary is None:
         glossary = Glossary()
@@ -126,6 +128,8 @@ def translate_project(project: Project, *,
                 if _validate_and_store(entry, translation, "machine",
                                        glossary, result):
                     result.llm_hits += 1
+            if save_callback is not None:
+                save_callback()   # 断点续跑：每批成功即原子写工程
     return result
 
 
