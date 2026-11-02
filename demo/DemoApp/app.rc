@@ -1,0 +1,74 @@
+// app.rc —— DemoApp 全部界面文本集中于此（菜单/对话框/字符串表）。
+#include <windows.h>
+#include "resource.h"
+
+IDI_APP ICON "app.ico"
+
+// ---------------- 主菜单（普通 MENU 模板） ----------------
+IDM_MAIN MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&New\tCtrl+N",  IDM_FILE_NEW
+        MENUITEM "&Open...\tCtrl+O", IDM_FILE_OPEN
+        MENUITEM "&Save\tCtrl+S", IDM_FILE_SAVE
+        MENUITEM "Save &As...",   IDM_FILE_SAVEAS
+        MENUITEM SEPARATOR
+        MENUITEM "E&xit",         IDM_APP_EXIT
+    END
+    POPUP "&Edit"
+    BEGIN
+        MENUITEM "&Undo\tCtrl+Z", IDM_EDIT_UNDO
+        MENUITEM "Cu&t\tCtrl+X",  IDM_EDIT_CUT
+        MENUITEM "&Copy\tCtrl+C", IDM_EDIT_COPY
+        MENUITEM "&Paste\tCtrl+V", IDM_EDIT_PASTE
+        MENUITEM SEPARATOR
+        MENUITEM "Select &All\tCtrl+A", IDM_EDIT_SELECTALL
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About DemoApp", IDM_HELP_ABOUT
+    END
+END
+
+// ---------------- About 对话框（标准 DLGTEMPLATE + DS_SETFONT） ----------------
+IDD_ABOUT DIALOG 0, 0, 180, 90
+STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "About DemoApp"
+FONT 9, "MS Shell Dlg"
+BEGIN
+    CONTROL "", IDI_APP, "Static", SS_ICON, 10, 10, 20, 20
+    LTEXT    "Demo Application", IDC_STATIC, 40, 10, 120, 10
+    LTEXT    "Version 1.0.0", IDC_STATIC, 40, 24, 120, 10
+    LTEXT    "A sample program for the zhres localization tool.", IDC_STATIC, 40, 38, 130, 18
+    DEFPUSHBUTTON "OK", IDOK, 66, 68, 48, 14
+END
+
+// ---------------- 字符串表（状态栏 / 消息框文本） ----------------
+STRINGTABLE
+BEGIN
+    IDS_READY       "Ready"
+    IDS_INFO        "DemoApp"
+    IDS_NEW_MSG     "A new document has been created."
+    IDS_OPEN_MSG    "The Open dialog would appear here."
+    IDS_SAVE_MSG    "Your document has been saved."
+    IDS_UNDO_MSG    "The last action was undone."
+    IDS_CUT_MSG     "The selection was cut to the clipboard."
+    IDS_COPY_MSG    "The selection was copied to the clipboard."
+    IDS_PASTE_MSG   "The clipboard content was pasted."
+    IDS_SELECTALL_MSG "All text was selected."
+    IDS_WELCOME     "Welcome to DemoApp! This text comes from the string table."
+    IDS_EXIT_PROMPT "Do you really want to quit DemoApp?"
+    IDS_TIP1        "Tip: open the Help menu to see the About dialog."
+    IDS_TIP2        "Tip: this demo shows static resource localization."
+    IDS_STATUS_FILE "Document: Untitled.txt"
+    IDS_STATUS_LINE "Line 1, Column 1"
+    IDS_STATUS_ZOOM "Zoom 100%"
+    IDS_STATUS_READ "Read/Write"
+    IDS_ERROR_FILE  "Error: the file could not be opened."
+    IDS_ERROR_SAVE  "Error: the file could not be saved."
+    IDS_CONFIRM_DEL "Are you sure you want to delete this item?"
+    IDS_DONE        "Operation completed successfully."
+    IDS_LOADING     "Loading, please wait..."
+    IDS_NOMORE      "There are no more items to show."
+END

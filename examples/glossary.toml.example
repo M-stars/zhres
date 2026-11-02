@@ -1,0 +1,18 @@
+# glossary.toml.example —— 术语表示例。复制后修改，用
+# zhres translate --glossary glossary.toml 启用。
+
+[terms]
+"File" = "文件"
+"Edit" = "编辑"
+"Exit" = "退出"
+"About" = "关于"
+"OK" = "确定"
+"Cancel" = "取消"
+"Help" = "帮助"
+"Settings" = "设置"
+"Save" = "保存"
+"Open" = "打开"
+
+[protect]
+# 翻译时必须原样保留的记号（送 LLM 前替换为保护符，翻译后回填并校验）
+patterns = ["%s", "%d", "%1$s", "\n", "&"]

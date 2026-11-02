@@ -19,3 +19,7 @@ tm.db
 .idea/
 .vscode/
 Thumbs.db
+
+# 编译产物
+*.o
+*.res

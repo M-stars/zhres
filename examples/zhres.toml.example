@@ -1,0 +1,20 @@
+# zhres.toml.example —— 复制为 zhres.toml（工作目录或 ~/.zhres/）后按需修改。
+
+[languages]
+source = "en"
+target = "zh-CN"
+
+[writeback]
+font = "Microsoft YaHei UI"
+font_charset = 134
+backup = true
+
+[llm]
+enabled = false          # 默认关闭，核心流程完全离线
+base_url = "https://api.openai.com/v1"
+model = "gpt-4o-mini"
+api_key_env = "ZHRES_API_KEY"
+batch_size = 20
+temperature = 0.2
+timeout_seconds = 60
+max_retries = 3
