@@ -1,0 +1,94 @@
+"""verify —— 回写后复核：重新 extract 目标文件并与工程对照。
+
+- 已翻译条目必须存在且当前源文 == 工程译文
+- 资源 (type, name, lang) 集合与工程记录一致
+- 任一失败 → 退出码 3（由 CLI 处理）并列出差异
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from .adapters.base import build_default_registry
+from .errors import ZhresError
+from .pe import RT_RCDATA, list_resources, load_target_pe
+from .project import STATUS_APPROVED, STATUS_HUMAN, STATUS_MACHINE, Project
+
+_TRANSLATED = (STATUS_MACHINE, STATUS_HUMAN, STATUS_APPROVED)
+
+
+@dataclass
+class VerifyResult:
+    ok: bool = True
+    problems: list[str] = field(default_factory=list)
+    checked: int = 0
+
+
+def verify_project(project: Project, exe: str | Path | None = None,
+                   *, require_translated: bool = True) -> VerifyResult:
+    """重新提取目标文件并与工程对照。"""
+    target = Path(exe) if exe else Path(project.target["path"])
+    result = VerifyResult()
+    registry = build_default_registry()
+
+    fresh: dict[str, str] = {}          # id → 当前源文
+    fresh_refs: set[tuple] = set()
+    try:
+        with load_target_pe(target) as lib:
+            refs = list_resources(lib)
+            for ref in refs:
+                fresh_refs.add((ref.type_id if isinstance(ref.type_id, int)
+                                else str(ref.type_id),
+                                ref.name if isinstance(ref.name, int)
+                                else str(ref.name),
+                                ref.lang))
+                if ref.type_id == RT_RCDATA:
+                    if lib.read_head(ref.type_id, ref.name, ref.lang, 4) \
+                            != b"TPF0":
+                        continue
+                data = lib.read(ref.type_id, ref.name, ref.lang)
+                adapter = registry.find(ref.type_id, ref.name, ref.lang, data)
+                if adapter is None:
+                    continue
+                for entry in adapter.extract(ref.type_id, ref.name,
+                                             ref.lang, data):
+                    fresh[entry.id] = entry.source
+    except ZhresError as exc:
+        result.ok = False
+        result.problems.append(f"无法提取目标文件：{exc}")
+        return result
+
+    # 资源集合一致性（与 extract 时记录的 resource_refs 对照）
+    expected_refs = {tuple(r) for r in project.target.get("resource_refs", [])}
+    if expected_refs and fresh_refs != expected_refs:
+        missing = expected_refs - fresh_refs
+        extra = fresh_refs - expected_refs
+        if missing:
+            result.ok = False
+            result.problems.append(
+                f"资源缺失（{len(missing)} 个）：{sorted(missing, key=repr)[:5]}")
+        if extra:
+            result.ok = False
+            result.problems.append(
+                f"资源新增（{len(extra)} 个）：{sorted(extra, key=repr)[:5]}")
+
+    # 已翻译条目对照
+    for entry in project.entries:
+        if require_translated and entry.status not in _TRANSLATED:
+            continue
+        if entry.status in _TRANSLATED and entry.translation is None:
+            continue
+        result.checked += 1
+        if entry.id not in fresh:
+            result.ok = False
+            result.problems.append(f"{entry.id}: 条目在目标文件中不存在")
+            continue
+        expected = entry.translation if entry.status in _TRANSLATED \
+            else entry.source
+        if fresh[entry.id] != expected:
+            result.ok = False
+            result.problems.append(
+                f"{entry.id}: 内容不符（期望 {expected!r}，"
+                f"实际 {fresh[entry.id]!r}）")
+    return result

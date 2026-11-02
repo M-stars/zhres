@@ -41,3 +41,13 @@ def make_pe_file(tmp_path: Path):
         return p
 
     yield _make
+
+
+@pytest.fixture
+def clean_home(tmp_path, monkeypatch):
+    """隔离用户主目录（法律提示标记等不污染真实 home）。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    # Path.home() 在 Windows 上读 USERPROFILE
+    return home
