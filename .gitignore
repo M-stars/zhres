@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.venv/
+venv/
+
+# zhres 产物
+*.zhres-project.json
+*.zhres-orig*.bak
+*.zhres-before-restore-*.bak
+tm.db
+
+# IDE / 系统
+.idea/
+.vscode/
+Thumbs.db
