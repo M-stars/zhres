@@ -41,7 +41,7 @@ Windows PE 文件的界面文本存放在资源段（.rsrc）中。zhres 用系�
               zhres restore（一键还原原版，SHA-256 校验）
 ```
 
-支持的资源类型：字符串表（RT_STRING）、菜单（普通模板与 MENUEX）、对话框（DLGTEMPLATE 与 DLGTEMPLATEEX，含字体补丁）、Delphi DFM（RT_RCDATA 中 TPF0 签名）。其他资源一律原样保留；加壳/保护特征检测命中时默认拒绝处理。
+支持的资源类型：字符串表（RT_STRING）、菜单（普通模板与 MENUEX）、对话框（DLGTEMPLATE 与 DLGTEMPLATEEX，含字体补丁）、Delphi DFM（RT_RCDATA 中 TPF0 签名）、.NET 托管资源（.resources，WinForms 字符串）、Qt 翻译文件（独立 .qm）、Unity TextAsset（SerializedFile v22）。其他资源一律原样保留；加壳/保护特征检测（节名 + 熵值 + TLS 回调分级）命中时默认拒绝处理。
 
 ## 安装
 
@@ -202,7 +202,7 @@ Delphi/VC 旧程序的字符串多为 ANSI，按系统代码页（简中环境 =
 直接支持。zhres 识别 RT_RCDATA 中以 `TPF0` 开头的 DFM 资源（Delphi 窗体），提取 `Caption` `Text` `Hint` `SimpleText` `Title` 属性与 `Lines.Strings` / `Items.Strings` 字符串列表（id 形如 `Form1/Lines/3`、`Form1/Button1/Caption`）。回写按原值类型编码（vaString 走 GBK，vaWString 走 UTF-16，vaUTF8String 走 UTF-8），未涉及的属性逐字节保持——含 vaBinary/vaCollection 的复杂窗体也已通过字节级 round-trip 验证。Lazarus/FreePascal 程序同格式兼容。
 
 **Q：哪些程序类型不支持？**
-WinForms 之外的 .NET UI（WPF 的 BAML 暂不支持——识别到即原样保留）、Electron（asar/pak）、Java、游戏引擎资源（Unity/Unreal）等暂不支持，遇到时按不认识的资源原样保留并跳过，不会损坏文件。扩展点见 `docs/architecture.md`。
+WPF 的 BAML、Electron（asar/pak）、Java、Unity 的 MonoBehaviour 内嵌字符串与 UnityFS 包裹文件、Unreal 等暂不支持，遇到时按不认识的资源原样保留并跳过，不会损坏文件。扩展点见 `docs/architecture.md`。
 
 **Q：回写失败会弄坏文件吗？**
 不会。回写通过 `BeginUpdateResourceW/UpdateResourceW/EndUpdateResourceW` 系统 API 完成：任一三元组失败立即 `EndUpdateResourceW(TRUE)` 丢弃全部修改，目标文件保持原样（有自动化测试覆盖此路径）；此外回写前强制备份，失败后可 `restore`。
@@ -226,7 +226,7 @@ WinForms 之外的 .NET UI（WPF 的 BAML 暂不支持——识别到即原样�
 - restore 的备份损坏核对依赖默认路径的工程文件（`<exe>.zhres-project.json`），用 `-o` 自定义工程名时该核对跳过（还原后仍校验 SHA-256 一致）
 - Windows 专属（ctypes + Win32 API），不支持 Linux/macOS
 
-## .NET / Qt 程序适配（v2 新增）
+## .NET / Qt / Unity 程序适配（v2 新增）
 
 - **.NET WinForms**：`zhres extract app.exe` 直接解析 CLR 托管资源
   （.resources），提取 `Control.Text` 等字符串键；回写通过 PE 手术
@@ -236,6 +236,10 @@ WinForms 之外的 .NET UI（WPF 的 BAML 暂不支持——识别到即原样�
 - **Qt**：对独立 `.qm` 翻译文件（Qt 程序 `translations/` 目录常见）
   直接 extract/import/writeback/verify（整文件原子重写，可变长）。
   已用 PySide6 真实样本验证。qrc 内嵌 .qm 暂不支持。
+- **Unity**：对 SerializedFile v22（Unity 2022+/团结引擎）的
+  `.assets` 文件提取/回写 **TextAsset**（本地化 JSON/CSV、剧情文本
+  常见载体）；追加式对象重写，UnityPy 交叉验证。类型树文件与
+  UnityFS 包裹暂不支持。
 - **壳/保护检测 v2**：节名黑名单之外，新增可执行节熵值分析（加密/
   压缩特征 → 拒绝）、TLS 回调检测（自校验/反调试警告）、overlay
   识别。分级：clean / suspicious（警告）/ packed（默认拒绝）。

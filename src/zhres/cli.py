@@ -77,6 +77,9 @@ def run_extract(exe: str | Path, out: str | Path, force: bool = False,
     from .adapters.qt import QM_MAGIC
     if head == QM_MAGIC:
         return _run_extract_qm(exe_path, out, say)
+    from .adapters.unity import is_unity_assets
+    if is_unity_assets(exe_path.read_bytes()):
+        return _run_extract_unity(exe_path, out, say)
 
     # 壳检测：命中默认拒绝执行（v2 分级：packed 拒绝，suspicious 警告）
     scan = packer_scan(exe_path)
@@ -197,6 +200,24 @@ def _run_extract_qm(exe_path: Path, out: str | Path,
     project.entries = entries
     project.save(out)
     say(f"解析 QM {exe_path.name}：{len(data)} 字节 → {len(entries)} 条")
+    return project, []
+
+
+def _run_extract_unity(exe_path: Path, out: str | Path,
+                       say) -> tuple[Project, list[str]]:
+    """Unity .assets（TextAsset）的提取（独立文件模式）。"""
+    from .adapters.unity import UnityAssetsAdapter
+    data = exe_path.read_bytes()
+    project = new_project(exe_path, file_sha256(exe_path),
+                          exe_path.stat().st_size, "unity")
+    project.target["kind"] = "unity"
+    entries = UnityAssetsAdapter().extract(exe_path.name, data)
+    project.resources_seen = {"UNITY_TextAsset": len(entries)}
+    project.target["resource_refs"] = [["UNITY", exe_path.name, 0]]
+    project.entries = entries
+    project.save(out)
+    say(f"解析 Unity .assets {exe_path.name}：{len(data)} 字节 → "
+        f"{len(entries)} 条 TextAsset")
     return project, []
 
 

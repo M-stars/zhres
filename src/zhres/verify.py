@@ -36,18 +36,24 @@ def verify_project(project: Project, exe: str | Path | None = None,
     fresh: dict[str, str] = {}          # id → 当前源文
     fresh_translations: dict[str, str | None] = {}  # id → 当前译文（QM 等）
     fresh_refs: set[tuple] = set()
-    if project.target.get("kind") == "qm":
-        # QM 独立文件模式：重新解析并对照
-        from .adapters.qt import QtAdapter
+    if project.target.get("kind") in ("qm", "unity"):
+        # QM / Unity 独立文件模式：重新解析并对照
+        kind = project.target["kind"]
+        if kind == "unity":
+            from .adapters.unity import UnityAssetsAdapter
+            file_adapter = UnityAssetsAdapter()
+        else:
+            from .adapters.qt import QtAdapter
+            file_adapter = QtAdapter()
         try:
             data = target.read_bytes()
-            for entry in QtAdapter().extract(target.name, data):
+            for entry in file_adapter.extract(target.name, data):
                 fresh[entry.id] = entry.source
                 fresh_translations[entry.id] = entry.translation
-            fresh_refs.add(("QM", target.name, 0))
+            fresh_refs.add((kind.upper(), target.name, 0))
         except ZhresError as exc:
             result.ok = False
-            result.problems.append(f"无法解析 QM 文件：{exc}")
+            result.problems.append(f"无法解析目标文件：{exc}")
             return result
     else:
         try:
@@ -90,7 +96,6 @@ def verify_project(project: Project, exe: str | Path | None = None,
         except ZhresError as exc:
             result.ok = False
             result.problems.append(f"无法提取目标文件：{exc}")
-            return result
 
     # 资源集合一致性（与 extract 时记录的 resource_refs 对照）
     expected_refs = {tuple(r) for r in project.target.get("resource_refs", [])}

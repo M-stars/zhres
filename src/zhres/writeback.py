@@ -95,6 +95,31 @@ def writeback(project: Project, exe: str | Path | None = None, *,
     result = WritebackResult()
     registry = build_default_registry()
 
+    # ---- 独立文件模式（QM / Unity .assets）：整文件原子重写 ----
+    if project.target.get("kind") in ("qm", "unity"):
+        if project.target.get("kind") == "unity":
+            from .adapters.unity import UnityAssetsAdapter
+            adapter_cls = UnityAssetsAdapter
+        else:
+            from .adapters.qt import QtAdapter as adapter_cls
+        original = target.read_bytes()
+        new_data = adapter_cls().apply(project.entries, original)
+        if new_data == original:
+            raise WritebackError("工程内没有可写回的已翻译条目")
+        backup, _sha = make_backup(target, project)
+        result.changed_resources = 1
+        tmp = target.with_suffix(target.suffix + ".zhres-tmp")
+        tmp.write_bytes(new_data)
+        tmp.replace(target)
+        project.target["backup_path"] = str(backup)
+        project.target["backup_sha256"] = _sha256_file(backup)
+        if project_path:
+            project.save(project_path)
+        vr = verify_project(project, target)
+        result.verify_ok = vr.ok
+        result.verify_problems = vr.problems
+        return result
+
     # ---- QM 翻译文件模式（独立文件，整文件原子重写）----
     if project.target.get("kind") == "qm":
         from .adapters.qt import QtAdapter
