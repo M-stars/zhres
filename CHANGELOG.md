@@ -41,6 +41,21 @@
 - **文档**：中文 README（5 分钟上手 + FAQ + 法律说明）、四份格式
   笔记（含实测踩坑）、架构与 v2 扩展指南、决策记录。
 
+### .NET / Qt / 壳检测 v2（本轮追加）
+
+- **.NET WinForms 适配器**：CLR 托管资源解析（COR20 头 → 托管资源
+  blob → .resources 键值），String 值可翻译；PE 手术回写（节内余量
+  原位 → 扩展尾节 → 追加 .zres 节，三级策略）；强名/Authenticode
+  警告；回写结果用官方 ResourceReader 交叉验证（csc 生成样本）；
+  WPF BAML 识别到即原样保留
+- **Qt .qm 适配器**（独立文件模式）：Qt6 块/记录格式（Language/
+  Contexts/Hashes/Messages/NumerusRules），Translation 记录替换
+  （UTF-16BE），PySide6 真实样本 2/2 字节还原
+- **壳检测 v2**：可执行节熵值分析（≥7.4 判加密/压缩）、TLS 回调
+  （自校验/反调试警告）、overlay 识别；分级 clean/suspicious/packed
+- verify 语义扩展：QM 等源文不变格式按译文记录对比
+- 文档：docs/formats/DOTNET.md、docs/formats/QM.md
+
 ### 质量
 
 - 115 项自动化测试（pytest，全离线）：四类资源字节级 round-trip

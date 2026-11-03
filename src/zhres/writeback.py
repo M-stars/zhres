@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .adapters.base import build_default_registry
 from .adapters.dialog import parse_dialog, patch_dialog_font, serialize_dialog
+from .adapters.dotnet import PeView
 from .errors import WritebackError, ZhresError
 from .pe import list_resources, load_target_pe
 from .project import WRITABLE_STATUSES, Project
@@ -94,15 +95,40 @@ def writeback(project: Project, exe: str | Path | None = None, *,
     result = WritebackResult()
     registry = build_default_registry()
 
-    # 分组：三元组 → 该资源内的条目
+    # ---- QM 翻译文件模式（独立文件，整文件原子重写）----
+    if project.target.get("kind") == "qm":
+        from .adapters.qt import QtAdapter
+        original = target.read_bytes()
+        new_data = QtAdapter().apply(project.entries, original)
+        if new_data == original:
+            raise WritebackError("工程内没有可写回的已翻译条目")
+        backup, _sha = make_backup(target, project)
+        result.changed_resources = 1
+        tmp = target.with_suffix(target.suffix + ".zhres-tmp")
+        tmp.write_bytes(new_data)
+        tmp.replace(target)
+        project.target["backup_path"] = str(backup)
+        project.target["backup_sha256"] = _sha256_file(backup)
+        if project_path:
+            project.save(project_path)
+        vr = verify_project(project, target)
+        result.verify_ok = vr.ok
+        result.verify_problems = vr.problems
+        return result
+
+    # 分组：三元组 → 该资源内的条目（dotnet 条目走手术路径，不入组）
+    dotnet_entries = [e for e in project.entries
+                      if e.resource_type == "dotnet"]
     groups: dict[tuple, list] = {}
     for entry in project.entries:
+        if entry.resource_type == "dotnet":
+            continue
         if entry.status not in WRITABLE_STATUSES or \
                 entry.translation is None:
             continue
         key = (entry.type_id, entry.resource_name, entry.language)
         groups.setdefault(key, []).append(entry)
-    if not groups:
+    if not groups and not dotnet_entries:
         raise WritebackError("工程内没有可写回的已翻译条目")
 
     # 控件文本变长警告（§5.3：中文长度 > 源文长度 × 1.5）
@@ -149,6 +175,24 @@ def writeback(project: Project, exe: str | Path | None = None, *,
     except Exception as exc:
         updater.discard()
         raise WritebackError(f"回写失败（目标文件保持原样）：{exc}") from exc
+
+    # .NET 托管资源：UpdateResource 提交之后做 PE 手术（失败则回滚备份）
+    if dotnet_entries:
+        from .adapters.dotnet import (read_clr_resources, parse_managed_blob,
+                                      apply_entries as dn_apply,
+                                      apply_surgery)
+        raw = target.read_bytes()
+        info = read_clr_resources(raw)
+        if info is None:
+            raise WritebackError("目标不再是 .NET 程序集，无法回写托管资源")
+        _coff, res_size, _flags, res_rva = info
+        v = PeView(raw)
+        roff = v.rva2off(res_rva)
+        blob = raw[roff:roff + res_size]
+        new_blob = dn_apply(dotnet_entries, blob)
+        if new_blob != blob:
+            apply_surgery(target, new_blob, result.length_warnings)
+            result.changed_resources += 1
 
     # 记录字体补丁清单进工程 JSON（§5.3 target.font_patches）
     if result.font_patches:

@@ -248,3 +248,49 @@
 - **理由**：远程会话的合成鼠标/键盘事件被系统拒绝（activation_failed），
   无法人工点按；驱动方式覆盖同一代码路径且可重复。
 - **影响**：打包版 GUI 的界面渲染经截图验证；操作流经 e2e 验证。
+
+## .NET / Qt / 壳检测 v2
+
+### D060 .NET String 值是 UTF-8（与直觉相反）
+- **决策**：.resources 的 String 值 = 7bit 字节长 + **UTF-8**；
+  名字区 = 7bit 字节长 + **UTF-16LE**。
+- **理由**：BinaryWriter.ReadString 语义；用 csc 生成样本实测裁定
+  （UTF-16 假设全文找不到 "Hello World"）。
+- **影响**：dotnet.py 编解码分两套。
+
+### D061 用户类型记录用 dataPos 切片原样保留
+- **决策**：typeCode ≥ 0x40 的记录（BinaryFormatter 变长、无长度
+  前缀）通过 dataPos 排序与相邻记录边界切片整体搬运。
+- **理由**：不实现 BinaryFormatter 就无法按格式跳过；切片利用
+  "记录按发射序连续存放" 的写方约定。
+- **影响**：切片失败（dataPos 非递增）→ 放弃重建、原样保留。
+
+### D062 PE 手术三级策略
+- **决策**：节内余量原位（首选）→ 扩展最后一个节（尾部无 overlay）
+  → 追加 .zres 节头（头部有余量）→ 都不行拒绝。
+- **理由**：托管资源 blob 后面通常紧邻元数据，盲目后写会踩坏；
+  扩展节时文件必须补零覆盖新 SizeOfRawData（否则 CLR 映射缺页，
+  实测挂起）。
+- **影响**：docs/formats/DOTNET.md 记录。
+
+### D063 QM verify 按译文记录对比
+- **决策**：QM 条目 context.verify_field="translation"，verify 对比
+  文件内译文记录（源文记录不随翻译变化）。
+- **理由**：QM 的源文/译文是独立记录，与 PE 格式"源文位置被译文
+  覆盖"的语义不同。
+- **影响**：verify.py 按 verify_field 分派。
+
+### D064 加壳/自校验只做检测与分级，不做绕过
+- **决策**：packerdetect v2 = 节名黑名单 + 可执行节熵值（≥7.4）+
+  TLS 回调 + overlay；分级 clean/suspicious/packed；packed 默认拒绝
+  （--force 可继续），suspicious 仅警告。
+- **理由**：任务书与 README 法律边界明确不提供绕过；分级让"资源
+  完好但带保护特征"的程序仍可安全处理。
+- **影响**：原 scan() 行为保留兼容。
+
+### D065 本机杀软会拦截/恢复被修改的 .NET 程序集
+- **决策**：.NET 回写验证改用官方 ResourceReader 交叉读取重建字节
+  （PowerShell 承载），不依赖运行被拦截的 exe。
+- **理由**：实测 Defender 在首次运行时挂起并恢复原文件——环境行为
+  而非代码缺陷；交叉读取验证格式等价且可重复。
+- **影响**：tests/test_dotnet.py 的运行时验证以此法实现。

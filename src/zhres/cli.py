@@ -18,6 +18,7 @@ from .config import load_config
 from .errors import ParseError, ZhresError
 from .pe import RT_RCDATA, list_resources, load_target_pe, type_display_name
 from .packerdetect import scan as packer_scan
+from .adapters.dotnet import PeView
 from .project import Entry, Project, new_project
 
 logger = logging.getLogger("zhres")
@@ -71,7 +72,13 @@ def run_extract(exe: str | Path, out: str | Path, force: bool = False,
     if not exe_path.is_file():
         raise ZhresError(f"目标文件不存在：{exe_path}")
 
-    # 壳检测：命中默认拒绝执行
+    # 文件类型分发：QM 翻译文件 / PE（含 .NET）
+    head = exe_path.read_bytes()[:16]
+    from .adapters.qt import QM_MAGIC
+    if head == QM_MAGIC:
+        return _run_extract_qm(exe_path, out, say)
+
+    # 壳检测：命中默认拒绝执行（v2 分级：packed 拒绝，suspicious 警告）
     scan = packer_scan(exe_path)
     if scan.packed:
         for hit in scan.hits:
@@ -82,6 +89,13 @@ def run_extract(exe: str | Path, out: str | Path, force: bool = False,
                 "该文件可能无法安全处理（内容被压缩/加密或带完整性自校验）。"
                 "如确认要继续，请使用 --force（后果自负）。")
         say("警告：--force 已指定，继续处理（结果不可保证）。")
+    try:
+        from .packerdetect import classify
+        cls = classify(exe_path)
+        for note in cls.get("notes", []):
+            say(f"提示：{note}")
+    except ZhresError:
+        pass
 
     project = new_project(exe_path, file_sha256(exe_path),
                           exe_path.stat().st_size, scan.machine)
@@ -131,6 +145,33 @@ def run_extract(exe: str | Path, out: str | Path, force: bool = False,
                          tname, ref.name, ref.lang, len(data), len(es))
             entries.extend(es)
 
+    # .NET 托管资源（WinForms 等）：非 Win32 资源树，走独立流程
+    try:
+        raw = exe_path.read_bytes()
+        from .adapters.dotnet import (read_clr_resources, parse_managed_blob,
+                                      extract_entries as dn_extract)
+        info = read_clr_resources(raw)
+        if info is not None:
+            _coff, res_size, flags, res_rva = info
+            v = PeView(raw)
+            roff = v.rva2off(res_rva)
+            if roff is not None:
+                blob = raw[roff:roff + res_size]
+                try:
+                    parsed = parse_managed_blob(blob, name=exe_path.name)
+                    dn_entries = dn_extract(parsed, name=exe_path.name)
+                    entries.extend(dn_entries)
+                    seen["DOTNET"] = len(dn_entries)
+                    seen["DOTNET_baml_skipped"] = sum(
+                        1 for e_ in parsed if e_.resources and e_.resources.baml)
+                    say(f".NET 托管资源：{len(dn_entries)} 条"
+                        f"（BAML 条目原样保留）")
+                except ParseError as exc:
+                    warnings.append(f".NET 托管资源解析失败：{exc}")
+                    seen["DOTNET_failed"] = 1
+    except OSError as exc:
+        warnings.append(f"读取文件做 .NET 探测失败：{exc}")
+
     seen_keys = [e.id for e in entries]
     if len(seen_keys) != len(set(seen_keys)):
         raise ZhresError("内部错误：条目 id 重复，请报告此问题")
@@ -140,6 +181,23 @@ def run_extract(exe: str | Path, out: str | Path, force: bool = False,
     project.entries = entries
     project.save(out)
     return project, warnings
+
+
+def _run_extract_qm(exe_path: Path, out: str | Path,
+                    say) -> tuple[Project, list[str]]:
+    """QM 翻译文件的提取（独立文件模式）。"""
+    from .adapters.qt import QtAdapter
+    data = exe_path.read_bytes()
+    project = new_project(exe_path, file_sha256(exe_path),
+                          exe_path.stat().st_size, "qm")
+    project.target["kind"] = "qm"
+    entries = QtAdapter().extract(exe_path.name, data)
+    project.resources_seen = {"QM": 1}
+    project.target["resource_refs"] = [["QM", exe_path.name, 0]]
+    project.entries = entries
+    project.save(out)
+    say(f"解析 QM {exe_path.name}：{len(data)} 字节 → {len(entries)} 条")
+    return project, []
 
 
 def cmd_extract(args, config: dict) -> int:

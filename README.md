@@ -202,7 +202,7 @@ Delphi/VC 旧程序的字符串多为 ANSI，按系统代码页（简中环境 =
 直接支持。zhres 识别 RT_RCDATA 中以 `TPF0` 开头的 DFM 资源（Delphi 窗体），提取 `Caption` `Text` `Hint` `SimpleText` `Title` 属性与 `Lines.Strings` / `Items.Strings` 字符串列表（id 形如 `Form1/Lines/3`、`Form1/Button1/Caption`）。回写按原值类型编码（vaString 走 GBK，vaWString 走 UTF-16，vaUTF8String 走 UTF-8），未涉及的属性逐字节保持——含 vaBinary/vaCollection 的复杂窗体也已通过字节级 round-trip 验证。Lazarus/FreePascal 程序同格式兼容。
 
 **Q：哪些程序类型不支持？**
-.NET 程序集（资源在 .resources/.resx，结构完全不同）、Electron/Qt（asar/pak、ts/qm）、游戏引擎资源（Unity/Unreal）等 v1 不支持，遇到时按不认识的资源原样保留并跳过，不会损坏文件。扩展点见 `docs/architecture.md`。
+WinForms 之外的 .NET UI（WPF 的 BAML 暂不支持——识别到即原样保留）、Electron（asar/pak）、Java、游戏引擎资源（Unity/Unreal）等暂不支持，遇到时按不认识的资源原样保留并跳过，不会损坏文件。扩展点见 `docs/architecture.md`。
 
 **Q：回写失败会弄坏文件吗？**
 不会。回写通过 `BeginUpdateResourceW/UpdateResourceW/EndUpdateResourceW` 系统 API 完成：任一三元组失败立即 `EndUpdateResourceW(TRUE)` 丢弃全部修改，目标文件保持原样（有自动化测试覆盖此路径）；此外回写前强制备份，失败后可 `restore`。
@@ -226,9 +226,24 @@ Delphi/VC 旧程序的字符串多为 ANSI，按系统代码页（简中环境 =
 - restore 的备份损坏核对依赖默认路径的工程文件（`<exe>.zhres-project.json`），用 `-o` 自定义工程名时该核对跳过（还原后仍校验 SHA-256 一致）
 - Windows 专属（ctypes + Win32 API），不支持 Linux/macOS
 
+## .NET / Qt 程序适配（v2 新增）
+
+- **.NET WinForms**：`zhres extract app.exe` 直接解析 CLR 托管资源
+  （.resources），提取 `Control.Text` 等字符串键；回写通过 PE 手术
+  （原位或扩节）+ COR20 头修补。回写结果用官方 ResourceReader 交叉
+  验证。强名签名 / Authenticode 程序集修改后验签会失败（有警告）。
+  WPF 的 BAML 资源识别到即原样保留（暂不支持修改）。
+- **Qt**：对独立 `.qm` 翻译文件（Qt 程序 `translations/` 目录常见）
+  直接 extract/import/writeback/verify（整文件原子重写，可变长）。
+  已用 PySide6 真实样本验证。qrc 内嵌 .qm 暂不支持。
+- **壳/保护检测 v2**：节名黑名单之外，新增可执行节熵值分析（加密/
+  压缩特征 → 拒绝）、TLS 回调检测（自校验/反调试警告）、overlay
+  识别。分级：clean / suspicious（警告）/ packed（默认拒绝）。
+
 ## v2 路线（候选）
 
-RT_VERSION / RT_ACCELERATORS 翻译、.NET（resx）、Electron（asar/pak）、Qt（ts/qm）适配器、控件布局微调、TM 相似度匹配（编辑距离）。
+RT_VERSION / RT_ACCELERATORS 翻译、WPF BAML、Electron（asar/pak）、
+qrc 内嵌 .qm、ManifestResource 名字解析、控件布局微调、TM 相似度匹配（编辑距离）。
 
 ## 许可与法律
 

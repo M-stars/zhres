@@ -58,7 +58,9 @@ class TestRoundtrip:
         """真实程序（Inno=Delphi 系 / Cheat Engine=Lazarus 系）提取的
         DFM 全量字节还原。样本位于 tests/fixtures/（随仓库分发）。"""
         files = sorted(glob.glob(os.path.join(FIXTURES, "real_*.bin")))
-        dfms = [f for f in files if "menuex" not in os.path.basename(f)]
+        dfms = [f for f in files
+                if "menuex" not in os.path.basename(f)
+                and "qm" not in os.path.basename(f)]
         assert dfms, "真实 DFM 样本缺失"
         for fn in dfms:
             data = open(fn, "rb").read()
