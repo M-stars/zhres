@@ -79,8 +79,13 @@ class GuiApp:
         ttk.Label(top, text="exe/dll：").grid(row=0, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.var_exe).grid(
             row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(top, text="浏览…", command=self._pick_exe).grid(
-            row=0, column=2)
+        btn_row = ttk.Frame(top)
+        btn_row.grid(row=0, column=2)
+        ttk.Button(btn_row, text="浏览…", command=self._pick_exe).pack(
+            side="left")
+        ttk.Button(btn_row, text="扫描本机软件",
+                   command=self._open_software_picker).pack(side="left",
+                                                            padx=(4, 0))
         ttk.Label(top, text="工程：").grid(row=1, column=0, sticky="w")
         ttk.Entry(top, textvariable=self.var_project).grid(
             row=1, column=1, sticky="ew", padx=4)
@@ -132,7 +137,9 @@ class GuiApp:
         # ---- 翻译选项 --------------------------------------------------
         opt = ttk.LabelFrame(outer, text=" 3. 翻译选项 ", padding=6)
         opt.pack(fill="x")
-        self.var_tm = tk.StringVar()
+        # 傻瓜式默认：翻译记忆自动使用 ~/.zhres/tm.db（越用越准）
+        default_tm = Path.home() / ".zhres" / "tm.db"
+        self.var_tm = tk.StringVar(value=str(default_tm))
         self.var_glossary = tk.StringVar()
         self.var_llm = tk.BooleanVar(value=False)
         self.var_dry = tk.BooleanVar(value=False)
@@ -218,7 +225,12 @@ class GuiApp:
                 result = fn(safe_log)
                 q.put(("ok", done_text, log_buf, result))
             except ZhresError as exc:
-                q.put(("error", str(exc), log_buf, None))
+                msg = str(exc)
+                if "Win32 5" in msg or "拒绝访问" in msg or "PermissionError" in msg:
+                    msg += ("\n\n提示：目标可能位于 Program Files 等受保护目录，"
+                            "或程序正在运行。\n请以管理员身份重新运行本工具，"
+                            "并关闭目标程序后重试。")
+                q.put(("error", msg, log_buf, None))
             except Exception as exc:  # 未知错误给完整栈，便于反馈
                 q.put(("error", f"{exc}\n{traceback.format_exc()}",
                        log_buf, None))
@@ -262,6 +274,129 @@ class GuiApp:
             self.var_exe.set(path)
             if not self.var_project.get():
                 self.var_project.set(path + ".zhres-project.json")
+
+    def _open_software_picker(self) -> None:
+        """傻瓜式入口：扫描本机已安装软件，选中即自动提取。"""
+        picker = tk.Toplevel(self.root)
+        picker.title("本机已安装软件")
+        picker.geometry("860x560")
+        picker.transient(self.root)
+
+        bar = ttk.Frame(picker, padding=6)
+        bar.pack(fill="x")
+        ttk.Label(bar, text="搜索：").pack(side="left")
+        var_search = tk.StringVar()
+        search_entry = ttk.Entry(bar, textvariable=var_search)
+        search_entry.pack(side="left", fill="x", expand=True, padx=4)
+        status = ttk.Label(picker, text="点击“重新扫描”开始。")
+        status.pack(fill="x", padx=6)
+
+        cols = ("name", "path")
+        holder = ttk.Frame(picker)
+        holder.pack(fill="both", expand=True, padx=6)
+        tree = ttk.Treeview(holder, columns=cols, show="headings")
+        tree.heading("name", text="软件名称")
+        tree.heading("path", text="程序路径")
+        tree.column("name", width=220)
+        tree.column("path", width=560)
+        vsb = ttk.Scrollbar(holder, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=vsb.set)
+        tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="left", fill="y")
+
+        apps: list = []
+
+        def populate() -> None:
+            kw = var_search.get().strip().lower()
+            tree.delete(*tree.get_children())
+            for a in apps:
+                if kw and kw not in a.name.lower() and \
+                        kw not in a.exe_path.lower():
+                    continue
+                tree.insert("", "end", iid=a.exe_path,
+                            values=(a.name, a.exe_path))
+
+        def do_scan_folder() -> None:
+            folder = filedialog.askdirectory(title="选择要扫描的文件夹"
+                                             "（游戏/便携版目录）")
+            if not folder:
+                return
+            status.configure(text=f"正在扫描 {folder} …")
+            tree.delete(*tree.get_children())
+
+            def worker():
+                from .software import scan_folder
+                return scan_folder(folder, max_depth=4)
+
+            def poll():
+                if scan_thread.is_alive():
+                    picker.after(150, poll)
+                    return
+                nonlocal apps
+                apps = scan_result or []
+                populate()
+                status.configure(text=f"文件夹扫描完成：{len(apps)} 个程序")
+
+            scan_result: list = []
+            import threading as _threading
+            def run():
+                nonlocal scan_result
+                from .software import scan_folder as _sf
+                scan_result = _sf(folder, max_depth=4)
+            scan_thread = _threading.Thread(target=run, daemon=True)
+            scan_thread.start()
+            poll()
+
+        def do_rescan() -> None:
+            status.configure(text="正在扫描注册表与开始菜单 …（首次约几秒）")
+            tree.delete(*tree.get_children())
+            import threading as _threading
+            scan_result: list = []
+
+            def run():
+                nonlocal scan_result
+                from .software import scan_all
+                scan_result = scan_all()
+
+            def poll():
+                if scan_thread.is_alive():
+                    picker.after(150, poll)
+                    return
+                nonlocal apps
+                apps = scan_result or []
+                populate()
+                status.configure(text=f"扫描完成：{len(apps)} 个程序"
+                                 "（双击选择并自动提取）")
+
+            scan_result: list = []
+            scan_thread = _threading.Thread(target=run, daemon=True)
+            scan_thread.start()
+            poll()
+
+        def on_select(event) -> None:
+            item = tree.identify_row(event.y)
+            if not item:
+                return
+            exe = item
+            self.var_exe.set(exe)
+            if not self.var_project.get():
+                self.var_project.set(exe + ".zhres-project.json")
+            picker.destroy()
+            self.on_extract()
+
+        tree.bind("<Double-1>", on_select)
+        var_search.trace_add("write", lambda *_: populate())
+
+        btns = ttk.Frame(picker, padding=6)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="重新扫描（注册表+开始菜单）",
+                   command=do_rescan).pack(side="left")
+        ttk.Button(btns, text="扫描指定文件夹…",
+                   command=do_scan_folder).pack(side="left", padx=6)
+        ttk.Button(btns, text="选择并提取", command=on_select).pack(
+            side="right")
+
+        do_rescan()
 
     def _pick_project(self) -> None:
         path = filedialog.askopenfilename(
