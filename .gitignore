@@ -23,3 +23,7 @@ Thumbs.db
 # 编译产物
 *.o
 *.res
+
+# PyInstaller 产物
+dist/
+*.spec.bak

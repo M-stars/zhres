@@ -30,6 +30,12 @@
   SHA-256 循环校验）。
 - **报告**（`zhres report`）：状态统计、翻译覆盖率、跳过原因分布、
   TM 条数、字体补丁清单。
+- **图形界面**（`zhres-gui` / `zhres gui`）：tkinter 实现，零新增依赖——
+  选择 exe → 提取 → 条目表格内双击直译（含占位符/快捷键实时校验）→
+  自动翻译 → 回写 → 校验 → 还原；耗时操作后台线程化，日志实时滚动。
+- **独立 exe 发布**：PyInstaller 打包 `zhres-gui.exe`（图形版）与
+  `zhres.exe`（命令行版）单文件可执行，免 Python 环境；构建入口
+  `packaging/entry_*.py`，`pip install -e .[build]` 提供构建工具。
 - **Demo**：`demo/DemoApp` 纯 Win32 英文演示程序（43 条界面文本，
   双构建脚本）与 `scripts/demo.sh` 一键端到端演示。
 - **文档**：中文 README（5 分钟上手 + FAQ + 法律说明）、四份格式

@@ -60,25 +60,31 @@ def ensure_legal_notice() -> None:
 # extract
 # ---------------------------------------------------------------------------
 
-def cmd_extract(args, config: dict) -> int:
-    exe = Path(args.exe)
-    ensure_legal_notice()
+def run_extract(exe: str | Path, out: str | Path, force: bool = False,
+                log=None) -> tuple[Project, list[str]]:
+    """提取核心流程（CLI 与 GUI 共用）。返回 (工程, 警告列表)。
+
+    出错抛 ZhresError；log 非 None 时接收进度消息。
+    """
+    say = log or (lambda m: None)
+    exe_path = Path(exe)
+    if not exe_path.is_file():
+        raise ZhresError(f"目标文件不存在：{exe_path}")
 
     # 壳检测：命中默认拒绝执行
-    scan = packer_scan(exe)
+    scan = packer_scan(exe_path)
     if scan.packed:
         for hit in scan.hits:
-            print(f"警告：检测到疑似加壳/保护节：{hit}", file=sys.stderr)
-        if not args.force:
-            print(
-                f"已拒绝处理：{exe} 存在壳/保护特征（{', '.join(scan.hits)}），\n"
-                "该文件可能无法安全处理（内容被压缩/加密或带完整性自校验）。\n"
-                "如确认要继续，请使用 --force（后果自负）。",
-                file=sys.stderr)
-            return EXIT_TARGET
-        print("警告：--force 已指定，继续处理（结果不可保证）。", file=sys.stderr)
+            say(f"警告：检测到疑似加壳/保护节：{hit}")
+        if not force:
+            raise ZhresError(
+                f"{exe_path} 存在壳/保护特征（{', '.join(scan.hits)}），"
+                "该文件可能无法安全处理（内容被压缩/加密或带完整性自校验）。"
+                "如确认要继续，请使用 --force（后果自负）。")
+        say("警告：--force 已指定，继续处理（结果不可保证）。")
 
-    project = new_project(exe, file_sha256(exe), exe.stat().st_size, scan.machine)
+    project = new_project(exe_path, file_sha256(exe_path),
+                          exe_path.stat().st_size, scan.machine)
     registry = build_default_registry()
     seen: dict[str, int] = {}
     entries: list[Entry] = []
@@ -119,6 +125,8 @@ def cmd_extract(args, config: dict) -> int:
                 seen[f"{tname}_failed"] = seen.get(f"{tname}_failed", 0) + 1
                 continue
             seen[tname] = seen.get(tname, 0) + 1
+            say(f"解析 {tname} {ref.name!r} lang={ref.lang}："
+                f"{len(data)} 字节 → {len(es)} 条")
             logger.debug("解析 %s %r lang=%d：%d 字节 → %d 条",
                          tname, ref.name, ref.lang, len(data), len(es))
             entries.extend(es)
@@ -130,6 +138,17 @@ def cmd_extract(args, config: dict) -> int:
     project.resources_seen = seen
     project.target["resource_refs"] = resource_refs
     project.entries = entries
+    project.save(out)
+    return project, warnings
+
+
+def cmd_extract(args, config: dict) -> int:
+    exe = Path(args.exe)
+    ensure_legal_notice()
+    out = Path(args.output) if args.output else \
+        Path(str(exe) + ".zhres-project.json")
+    project, warnings = run_extract(exe, out, force=args.force)
+    entries = project.entries
 
     # 统计表
     stats: dict[str, dict[str, int]] = {}
@@ -142,7 +161,7 @@ def cmd_extract(args, config: dict) -> int:
             row["translatable"] += 1
     print(f"目标：{exe}")
     print(f"SHA-256：{project.target['sha256']}")
-    if not entries and not seen:
+    if not entries and not project.resources_seen:
         print("未发现可翻译资源（资源目录为空）。")
     else:
         print(f"{'类型':<10}{'条目':>6}{'待翻译':>8}{'跳过':>6}")
@@ -154,8 +173,6 @@ def cmd_extract(args, config: dict) -> int:
         print(f"{'合计':<10}{total:>6}{trans:>8}{skip:>6}")
         print(f"资源概览：{project.resources_seen}")
 
-    out = Path(args.output) if args.output else Path(str(exe) + ".zhres-project.json")
-    project.save(out)
     print(f"工程已写入：{out}")
     for w in warnings:
         print(f"警告：{w}", file=sys.stderr)
@@ -410,6 +427,11 @@ def cmd_report(args, config: dict) -> int:
 # 参数解析
 # ---------------------------------------------------------------------------
 
+def cmd_gui(args, config: dict) -> int:
+    from .gui import main as gui_main
+    return gui_main()
+
+
 class _ArgumentParser(argparse.ArgumentParser):
     """用法错误退出码改为 1（任务书规定）。"""
 
@@ -489,6 +511,9 @@ def build_parser() -> _ArgumentParser:
     p.add_argument("project", help="工程文件路径")
     p.add_argument("--tm", help="翻译记忆数据库（显示条数）")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("gui", help="启动图形界面")
+    p.set_defaults(func=cmd_gui)
 
     return parser
 

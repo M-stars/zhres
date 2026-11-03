@@ -217,3 +217,34 @@
 - **理由**：任务书 §7.4 "顺序可不严格，集合必须相等"。
 - **影响**：数量变化（源 1 个 %s 译文 2 个）不报错——集合相同。
   如需数量校验列入 v2。
+
+## GUI 与 exe 发布（追加交付）
+
+### D050 GUI 选型 tkinter（标准库）
+- **决策**：图形界面用 tkinter/ttk（标准库自带），入口 `zhres-gui`
+  控制台脚本与 `zhres gui` 子命令双通道。
+- **理由**：延续"零第三方运行时依赖"的核心承诺；PySide/PyQt 体积大
+  且引入许可与打包复杂度。
+- **影响**：src/zhres/gui.py；pyproject 增加 zhres-gui 入口。
+
+### D051 tkinter 变量只允许主线程读取
+- **决策**：所有 StringVar.get() 在主线程完成后以闭包参数传入后台
+  任务；任务结果经队列回主线程刷新界面。
+- **理由**：tkinter 非线程安全，后台线程读变量抛
+  "main thread is not in main loop"（实测踩坑）。
+- **影响**：gui.py 各 on_xxx 均为"主线程取参 → 线程执行 → 队列回传"。
+
+### D052 LoadLibraryExW/BeginUpdateResourceW 强制绝对路径
+- **决策**：winapi.py 两处入口对路径先 resolve() 成绝对路径。
+- **理由**：不含分隔符的裸文件名会被按 DLL 搜索顺序解析（应用目录/
+  系统目录），不命中当前目录——打包成 exe 后暴露（纯 Python 环境
+  恰好命中搜索序中的 cwd，掩盖了问题）。
+- **影响**：CLI/GUI/exe 三种形态下相对路径行为一致。
+
+### D053 GUI e2e 测试以驱动代替合成输入
+- **决策**：test_gui_e2e.py 通过桩替文件对话框并驱动真实事件循环
+  （root.update + 队列轮询）完成 extract→import→writeback→verify→
+  restore；Tk() 构造失败自动重试（本机杀软间歇锁 tcl 脚本）。
+- **理由**：远程会话的合成鼠标/键盘事件被系统拒绝（activation_failed），
+  无法人工点按；驱动方式覆盖同一代码路径且可重复。
+- **影响**：打包版 GUI 的界面渲染经截图验证；操作流经 e2e 验证。

@@ -161,7 +161,9 @@ class PeResourceLibrary:
     """
 
     def __init__(self, path: str | Path) -> None:
-        self.path = str(path)
+        # 绝对路径：LoadLibraryExW 对不含分隔符的名字按 DLL 搜索顺序
+        # 解析（应用目录/系统目录），不会命中当前目录
+        self.path = str(Path(path).resolve())
         self._handle = kernel32.LoadLibraryExW(
             self.path, None,
             LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE,
@@ -277,7 +279,8 @@ class ResourceUpdater:
     """
 
     def __init__(self, path: str | Path) -> None:
-        self.path = str(path)
+        # 同 PeResourceLibrary：BeginUpdateResourceW 的相对名按搜索顺序解析
+        self.path = str(Path(path).resolve())
         self._handle = kernel32.BeginUpdateResourceW(self.path, False)
         if not self._handle:
             raise _win_error(f"打开资源更新句柄失败", self.path)

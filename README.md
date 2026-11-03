@@ -48,10 +48,32 @@ Windows PE 文件的界面文本存放在资源段（.rsrc）中。zhres 用系�
 要求：Windows 10/11、Python 3.10/3.11/3.12。**零第三方运行时依赖**（`pip install zhres` 不会拉入 requests/pywin32 等）。
 
 ```bat
-git clone https://github.com/Mstars/zhres.git
+git clone https://github.com/M-stars/zhres.git
 cd zhres
 pip install -e .
 zhres --help
+```
+
+### 图形界面
+
+不想用命令行？两种方式启动图形界面：
+
+```bat
+pip install -e .            # 之后：
+zhres-gui                   # 或 zhres gui
+```
+
+界面提供完整流程：选择 exe → 提取资源 → **在表格中双击直接翻译**（或导出/导入 CSV）→ 自动翻译（翻译记忆/术语/可选 LLM）→ 回写（自动备份+字体补丁）→ 校验 → 还原，日志实时可见。耗时操作在后台线程执行，界面不冻结。
+
+### 免 Python 环境的单文件 exe
+
+无需安装 Python，直接构建独立可执行文件（一次性构建，产物约 13 MB/个）：
+
+```bat
+pip install -e .[build]     # 安装 PyInstaller（仅构建期需要，运行时仍零依赖）
+build\venv_gui\Scripts\pyinstaller --noconfirm --onefile --windowed --name zhres-gui --icon demo\DemoApp\app.ico packaging\entry_gui.py
+build\venv_gui\Scripts\pyinstaller --noconfirm --onefile --console  --name zhres     --icon demo\DemoApp\app.ico packaging\entry_cli.py
+:: 产物在 dist\zhres-gui.exe（图形版）与 dist\zhres.exe（命令行版）
 ```
 
 ## 5 分钟上手（以自带 demo 为例）
