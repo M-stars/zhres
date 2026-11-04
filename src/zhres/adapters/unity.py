@@ -1,22 +1,23 @@
 """adapters.unity —— Unity 序列化文件（.assets）TextAsset 适配器。
 
-覆盖范围（v2 首批）：
-- **SerializedFile v22**（Unity 2022+/团结引擎，大端头 + 小端体）：
-  解析对象表，提取 **TextAsset**（type_id → class_id 49）对象——
-  游戏常把本地化 JSON/CSV、剧情文本放在 TextAsset 里
+覆盖范围（v2）：
+- **SerializedFile v15–21**（Unity 2017–2021，全小端头）：解析对象表，
+  提取 **TextAsset**（class_id 49）对象——游戏常把本地化 JSON/CSV、
+  剧情文本放在 TextAsset 里
+- **SerializedFile v22**（Unity 2022+/团结引擎，大端头 + 小端体）：同上
 - 回写：新数据**追加到文件尾**（4 字节对齐），就地修补对象表的
-  byte_start/byte_size 字段并更新头部的 file_size——无需移动其他
-  对象，老数据成为死区（与 .NET 手术同思路）
+  byte_start/byte_size 字段（v22 另需更新头部 fileSize）——无需移动
+  其他对象，老数据成为死区（与 .NET 手术同思路）
 - **限制**（如实告知）：
   - enableTypeTree=1 的文件（编辑器构建）：类型树跳过需要完整
     typetree 解析，暂不支持（明确报错）
-  - UnityFS/UnityWeb 包裹文件（LZ4/LZMA 压缩）：暂不支持
   - MonoBehaviour 内嵌字符串（如 TextMeshPro 的 m_text）需要类型树
     或 IL2CPP 信息，暂不支持
-  - fileVersion ≠ 22：明确报错（15~21 的小端头为另一布局）
+  - fileVersion < 15 或 23–25：明确报错；UnityFS 包裹文件见 unityfs.py
 
-格式依据：实测 Tuanjie（团结引擎）2022.3.17 真实文件 +
-UnityPy（社区标准实现，项目 venv 内参照）交叉验证。
+格式依据：UnityPy（社区标准实现）SerializedFile/ObjectReader 逐字段
+对照 + docs/formats/UNITY.md 记录；v22 侧另有实测 Tuanjie
+（团结引擎）2022.3.17 真实文件 + UnityPy 交叉验证。
 """
 
 from __future__ import annotations
@@ -28,11 +29,9 @@ from ..errors import ParseError
 from ..project import Entry, WRITABLE_STATUSES
 from .base import auto_skip, make_entry
 
+UNITY_MIN_VERSION = 15
 UNITY_V22_VERSION = 22
-
-
-def _read7(data: bytes, off: int) -> tuple[int, int]:  # pragma: no cover
-    raise NotImplementedError
+_CLASS_ID_TEXT_ASSET = 49
 
 
 @dataclass
@@ -40,9 +39,10 @@ class UnityObject:
     path_id: int
     type_id: int
     class_id: int
-    byte_start: int              # 绝对文件偏移（data_offset + 表内相对值）
+    byte_start: int              # 绝对文件偏移（v15-21 直接绝对；v22 表值+data_offset）
     byte_size: int
     entry_off: int               # byte_start 字段在文件内的偏移（就地修补用）
+    entry_size_off: int = 0      # byte_size 字段在文件内的偏移
     # TextAsset 解析结果（仅 class_id==49）
     asset_name: str | None = None
     script: str | None = None
@@ -56,7 +56,7 @@ class UnityFile:
     version: int = 0
     raw_endian_le: bool = True
     metadata_size: int = 0
-    file_size_field: int = 0     # 头部 fileSize 字段的文件偏移
+    file_size_field: int = 0     # 头部 fileSize 字段的文件偏移（v22 专用）
     file_size_value: int = 0
     data_offset: int = 0
     objects: list[UnityObject] = field(default_factory=list)
@@ -65,23 +65,113 @@ class UnityFile:
         return [o for o in self.objects if o.asset_name is not None]
 
 
-def parse_unity(data: bytes, *, name=None) -> UnityFile:
-    """解析 SerializedFile v22（Unity 2022+/团结引擎，大端头 + 小端体）。"""
-    if len(data) < 0x48:
+def _parse_text_asset(obj: UnityObject, data: bytes) -> None:
+    """TextAsset 对象布局：[i32 名长][utf8 名][align4][i32 脚本长][utf8 脚本]。"""
+    if not (0 <= obj.byte_start <= len(data)
+            and obj.byte_start + obj.byte_size <= len(data)):
+        return
+    o = obj.byte_start
+    (name_len,) = struct.unpack_from("<i", data, o)
+    o += 4
+    if not (0 <= name_len <= obj.byte_size):
+        return
+    obj.asset_name = data[o:o + name_len].decode("utf-8", "replace")
+    o += name_len
+    o = (o + 3) & ~3
+    (script_len,) = struct.unpack_from("<i", data, o)
+    o += 4
+    if 0 <= script_len <= obj.byte_size:
+        obj.script = data[o:o + script_len].decode("utf-8", "replace")
+        obj.script_off = o
+        obj.script_len = script_len
+
+
+def _parse_v15_21(data: bytes, version: int, *, name=None) -> UnityFile:
+    """v15–21：全小端。头 4×u32（metadataSize/fileSize/version/dataOffset）
+    + u8 endian + 3 保留字节，随后 strz unityVersion 等。"""
+    if len(data) < 0x20:
         raise ParseError("文件过短，不是 Unity .assets", name=name)
-    # v22 大端头：@8 i32 = 22；@0x10 raw_endian；@0x14 metadataSize；
-    # @0x18 i64 fileSize；@0x20 i64 dataOffset
-    if struct.unpack_from(">i", data, 8)[0] != UNITY_V22_VERSION:
+    uf = UnityFile(data=data, version=version)
+    uf.metadata_size = struct.unpack_from("<I", data, 0)[0]
+    uf.file_size_value = struct.unpack_from("<I", data, 4)[0]
+    uf.data_offset = struct.unpack_from("<I", data, 12)[0]
+    if data[16] != 0:
+        raise ParseError("大端体的 v15-21 文件暂不支持", name=name)
+
+    p = 0x14                      # u8 endian + 3 保留之后
+    end = data.index(b"\x00", p)
+    p = end + 1                   # unityVersion 字符串（含 NUL）
+    if version >= 8:
+        p += 4                    # targetPlatform
+    enable_tree = data[p]
+    p += 1
+    (type_count,) = struct.unpack_from("<i", data, p)
+    p += 4
+    if type_count < 0 or type_count > 100_000:
+        raise ParseError(f"类型表数量异常：{type_count}", name=name)
+    if enable_tree:
         raise ParseError(
-            "不是 SerializedFile v22（Unity 2022+）格式，暂不支持其他版本",
+            "该文件带类型树（enableTypeTree=1，常见于编辑器构建或部分游戏），"
+            "暂不支持解析——可尝试寻找发布版（stripped）资源文件",
             name=name)
-    if data[:8] != b"\x00" * 8:
-        raise ParseError("v22 头部前 8 字节非零（非标准 Unity 文件）", name=name)
+    class_ids: list[int] = []
+    for _ in range(type_count):
+        (class_id,) = struct.unpack_from("<i", data, p)
+        p += 4
+        if version >= 16:
+            p += 1                # isStrippedType u8
+        if version >= 17:
+            p += 2                # scriptTypeIndex i16
+        # script_id（Hash128）：v<16 且 class_id<0，或 v>=16 且 class_id==114
+        if (version < 16 and class_id < 0) or \
+                (version >= 16 and class_id == 114):
+            p += 16
+        p += 16                   # oldTypeHash
+        class_ids.append(class_id)
+
+    (obj_count,) = struct.unpack_from("<i", data, p)
+    p += 4
+    if obj_count < 0 or obj_count > 1_000_000:
+        raise ParseError(f"对象表数量异常：{obj_count}", name=name)
+    for _ in range(obj_count):
+        if p % 4:
+            p = (p + 3) & ~3
+        (path_id,) = struct.unpack_from("<q", data, p)
+        p += 8
+        (byte_start,) = struct.unpack_from("<I", data, p)
+        entry_off = p             # byte_start 字段位置（就地修补用）
+        p += 4
+        (byte_size,) = struct.unpack_from("<I", data, p)
+        p += 4
+        (type_id,) = struct.unpack_from("<i", data, p)
+        p += 4
+        if 11 <= version < 17:
+            p += 2                # scriptTypeIndex i16（对象表内）
+        if version in (15, 16):
+            p += 1                # isStripped u8（对象表内）
+        obj = UnityObject(
+            path_id=path_id,
+            type_id=type_id,
+            class_id=class_ids[type_id] if 0 <= type_id < len(class_ids) else -1,
+            byte_start=byte_start + uf.data_offset,
+            byte_size=byte_size,
+            entry_off=entry_off,
+            entry_size_off=entry_off + 4,
+        )
+        if obj.class_id == _CLASS_ID_TEXT_ASSET:
+            _parse_text_asset(obj, data)
+        uf.objects.append(obj)
+    return uf
+
+
+def _parse_v22(data: bytes, *, name=None) -> UnityFile:
+    """v22（Unity 2022+/团结引擎）：大端头 + 小端体。"""
     uf = UnityFile(data=data, version=UNITY_V22_VERSION)
     uf.raw_endian_le = struct.unpack_from(">B", data, 0x10)[0] == 0
     if not uf.raw_endian_le:
         raise ParseError("大端体的 v22 文件暂不支持", name=name)
     uf.metadata_size = struct.unpack_from(">I", data, 0x14)[0]
+    uf.file_size_field = 0x18
     uf.file_size_value = struct.unpack_from(">q", data, 0x18)[0]
     uf.data_offset = struct.unpack_from(">q", data, 0x20)[0]
 
@@ -111,8 +201,6 @@ def parse_unity(data: bytes, *, name=None) -> UnityFile:
         if class_id == 114:
             p += 16                  # script_id (Hash128)
         p += 16                      # old_type_hash
-        if script_idx >= 0 and class_id == 114:
-            pass                     # 已跳过 script_id
         class_ids.append(class_id)
 
     (obj_count,) = struct.unpack_from("<i", data, p)
@@ -137,26 +225,31 @@ def parse_unity(data: bytes, *, name=None) -> UnityFile:
             byte_start=uf.data_offset + rel_start,
             byte_size=byte_size,
             entry_off=p - 16,        # byte_start 字段位置（path_id 后）
+            entry_size_off=p - 8,
         )
-        if obj.class_id == 49 and 0 <= obj.byte_start <= len(data) \
-                and obj.byte_start + obj.byte_size <= len(data):
-            # TextAsset：[i32 名长][utf8 名][align4][i32 脚本长][utf8 脚本]
-            o = obj.byte_start
-            (name_len,) = struct.unpack_from("<i", data, o)
-            o += 4
-            if 0 <= name_len <= obj.byte_size:
-                obj.asset_name = data[o:o + name_len].decode("utf-8", "replace")
-                o += name_len
-                o = (o + 3) & ~3
-                (script_len,) = struct.unpack_from("<i", data, o)
-                o += 4
-                if 0 <= script_len <= obj.byte_size:
-                    obj.script = data[o:o + script_len].decode(
-                        "utf-8", "replace")
-                    obj.script_off = o
-                    obj.script_len = script_len
+        if obj.class_id == _CLASS_ID_TEXT_ASSET:
+            _parse_text_asset(obj, data)
         uf.objects.append(obj)
     return uf
+
+
+def parse_unity(data: bytes, *, name=None) -> UnityFile:
+    """解析 SerializedFile（v15–21 小端 / v22 大端头）。"""
+    if len(data) < 0x20:
+        raise ParseError("文件过短，不是 Unity .assets", name=name)
+    # v22 的版本号在偏移 8 处为大端 i32；v15-21 为小端 u32
+    if struct.unpack_from(">i", data, 8)[0] == UNITY_V22_VERSION:
+        if data[:8] != b"\x00" * 8:
+            raise ParseError("v22 头部校验失败（非标准 Unity 文件）", name=name)
+        if len(data) < 0x48:
+            raise ParseError("文件过短，不是 Unity .assets", name=name)
+        return _parse_v22(data, name=name)
+    version = struct.unpack_from("<I", data, 8)[0]
+    if UNITY_MIN_VERSION <= version < UNITY_V22_VERSION:
+        return _parse_v15_21(data, version, name=name)
+    raise ParseError(
+        f"不支持的 SerializedFile 版本：{version}"
+        f"（支持 {UNITY_MIN_VERSION}–{UNITY_V22_VERSION}）", name=name)
 
 
 class UnityAssetsAdapter:
@@ -218,15 +311,24 @@ class UnityAssetsAdapter:
             out += new_script
             while len(out) % 4:
                 out += b"\x00"
-            struct.pack_into("<q", out, obj.entry_off,
-                             new_start - uf.data_offset)
-            struct.pack_into("<I", out, obj.entry_off + 8,
+            if uf.version == UNITY_V22_VERSION:
+                # v22：byte_start 为相对 data_offset 的 i64
+                struct.pack_into("<q", out, obj.entry_off,
+                                 new_start - uf.data_offset)
+            else:
+                # v15-21：byte_start 为绝对偏移 u32（>4GB 的 .assets 不存在）
+                struct.pack_into("<I", out, obj.entry_off, new_start)
+            struct.pack_into("<I", out, obj.entry_size_off,
                              len(out) - new_start)
             changed = True
         if not changed:
             return original
-        # 头部 fileSize 字段更新（大端 i64 @0x18）
-        struct.pack_into(">q", out, 0x18, len(out))
+        if uf.version == UNITY_V22_VERSION:
+            # 头部 fileSize 字段更新（大端 i64 @0x18）
+            struct.pack_into(">q", out, uf.file_size_field, len(out))
+        elif uf.file_size_value == len(original):
+            # v15-21 头部 fileSize u32（引擎一般不校验，保持一致性）
+            struct.pack_into("<I", out, 4, len(out))
         return bytes(out)
 
 

@@ -109,6 +109,18 @@ QM 块结构改写 Translation 字符串（变长编码，回写需重建块长�
 `QTranslator` 完整性自检（极少），原样保留策略兜底。独立 `.qm`
 文件场景同样需要 v2 的"旁路文件"入口。
 
+### 游戏引擎数据文件（v2 已实现，见 docs/formats/）
+
+游戏引擎的文本载体是**数据文件**而非 PE 资源。v2 已通过
+adapters/gamefiles.py 的统一注册表落地（单文件 + 文件夹双模式）：
+RPG Maker MV/MZ（JSON）、XP/VX/VX Ace（RGSSAD + Ruby Marshal）、
+GameMaker（data.win STRG）、Unity（.assets v15–22、UnityFS 包裹）、
+通用 JSON/TXT/INI/CSV。尚未覆盖：Kirikiri .xp3（加密过滤器可配置）、
+Wolf RPG（密钥在 exe 内需启发式提取）、Ren'Py（自定义 pickle）、
+SRPG Studio（.dts XOR）、Godot .translation（RSRC 二进制资源）——
+接入方式与 QM/Unity 相同：实现 can_parse_file/extract/apply 三方法
+并注册进 gamefiles._FORMATS。
+
 ### 其他候选
 
 - **RT_VERSION / RT_ACCELERATORS**：纯展示性信息（版本串）与快捷键表，

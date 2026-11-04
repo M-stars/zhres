@@ -36,21 +36,43 @@ def verify_project(project: Project, exe: str | Path | None = None,
     fresh: dict[str, str] = {}          # id → 当前源文
     fresh_translations: dict[str, str | None] = {}  # id → 当前译文（QM 等）
     fresh_refs: set[tuple] = set()
-    if project.target.get("kind") in ("qm", "unity"):
-        # QM / Unity 独立文件模式：重新解析并对照
-        kind = project.target["kind"]
-        if kind == "unity":
-            from .adapters.unity import UnityAssetsAdapter
-            file_adapter = UnityAssetsAdapter()
-        else:
-            from .adapters.qt import QtAdapter
-            file_adapter = QtAdapter()
+    kind = project.target.get("kind")
+    if kind == "folder":
+        # 文件夹模式：逐文件重新解析对照
+        from .adapters.gamefiles import format_by_name
+        root = Path(project.target["path"])
+        for info in project.target.get("files", []):
+            rel = info.get("rel", "")
+            path = root / rel
+            fmt = format_by_name(info.get("fmt", ""))
+            if fmt is None or not path.is_file():
+                result.ok = False
+                result.problems.append(f"文件缺失或格式未知：{path}")
+                continue
+            try:
+                data = path.read_bytes()
+                for entry in fmt.extract(rel, data):
+                    fresh[entry.id] = entry.source
+                    fresh_translations[entry.id] = entry.translation
+            except ZhresError as exc:
+                result.ok = False
+                result.problems.append(f"无法解析 {rel}：{exc}")
+        expected_root = Path(str(project.target.get("path", "")))
+        fresh_refs.add(("FOLDER", expected_root.name, 0))
+    elif kind:
+        # 独立游戏数据文件（QM/Unity/JSON/文本/GameMaker/RGSS 等）
+        from .adapters.gamefiles import format_by_name
+        fmt = format_by_name(kind)
+        if fmt is None:
+            result.ok = False
+            result.problems.append(f"未知的独立文件格式：{kind}")
+            return result
         try:
             data = target.read_bytes()
-            for entry in file_adapter.extract(target.name, data):
+            for entry in fmt.extract(target.name, data):
                 fresh[entry.id] = entry.source
                 fresh_translations[entry.id] = entry.translation
-            fresh_refs.add((kind.upper(), target.name, 0))
+            fresh_refs.add((kind, target.name, 0))
         except ZhresError as exc:
             result.ok = False
             result.problems.append(f"无法解析目标文件：{exc}")
@@ -97,11 +119,16 @@ def verify_project(project: Project, exe: str | Path | None = None,
             result.ok = False
             result.problems.append(f"无法提取目标文件：{exc}")
 
-    # 资源集合一致性（与 extract 时记录的 resource_refs 对照）
-    expected_refs = {tuple(r) for r in project.target.get("resource_refs", [])}
-    if expected_refs and fresh_refs != expected_refs:
-        missing = expected_refs - fresh_refs
-        extra = fresh_refs - expected_refs
+    # 资源集合一致性（与 extract 时记录的 resource_refs 对照；
+    # 字符串名大小写归一，兼容历史工程记大写格式名）
+    def _norm(ref) -> tuple:
+        return tuple(x.lower() if isinstance(x, str) else x for x in ref)
+
+    expected_refs = {_norm(r) for r in project.target.get("resource_refs", [])}
+    if expected_refs and {_norm(r) for r in fresh_refs} != expected_refs:
+        fresh_norm = {_norm(r) for r in fresh_refs}
+        missing = expected_refs - fresh_norm
+        extra = fresh_norm - expected_refs
         if missing:
             result.ok = False
             result.problems.append(

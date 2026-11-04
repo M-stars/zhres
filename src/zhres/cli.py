@@ -66,20 +66,25 @@ def run_extract(exe: str | Path, out: str | Path, force: bool = False,
     """提取核心流程（CLI 与 GUI 共用）。返回 (工程, 警告列表)。
 
     出错抛 ZhresError；log 非 None 时接收进度消息。
+    支持三类目标：文件夹（游戏数据目录）、游戏数据文件（QM/Unity/
+    JSON/TXT/INI/CSV/GameMaker/RGSS）、PE（含 .NET）。
     """
     say = log or (lambda m: None)
     exe_path = Path(exe)
+    if exe_path.is_dir():
+        return _run_extract_folder(exe_path, out, say)
     if not exe_path.is_file():
         raise ZhresError(f"目标文件不存在：{exe_path}")
 
-    # 文件类型分发：QM 翻译文件 / PE（含 .NET）
-    head = exe_path.read_bytes()[:16]
-    from .adapters.qt import QM_MAGIC
-    if head == QM_MAGIC:
-        return _run_extract_qm(exe_path, out, say)
-    from .adapters.unity import is_unity_assets
-    if is_unity_assets(exe_path.read_bytes()):
-        return _run_extract_unity(exe_path, out, say)
+    # 游戏数据文件分发（QM/Unity/.assets 由注册表覆盖）
+    from .adapters.gamefiles import detect_game_file
+    try:
+        data = exe_path.read_bytes()
+    except OSError as exc:
+        raise ZhresError(f"读取目标文件失败：{exc}") from exc
+    fmt = detect_game_file(data, exe_path.name)
+    if fmt is not None:
+        return _run_extract_gamefile(fmt, exe_path, data, out, say)
 
     # 壳检测：命中默认拒绝执行（v2 分级：packed 拒绝，suspicious 警告）
     scan = packer_scan(exe_path)
@@ -186,39 +191,86 @@ def run_extract(exe: str | Path, out: str | Path, force: bool = False,
     return project, warnings
 
 
-def _run_extract_qm(exe_path: Path, out: str | Path,
-                    say) -> tuple[Project, list[str]]:
-    """QM 翻译文件的提取（独立文件模式）。"""
-    from .adapters.qt import QtAdapter
-    data = exe_path.read_bytes()
+def _run_extract_gamefile(fmt, exe_path: Path, data: bytes, out: str | Path,
+                          say) -> tuple[Project, list[str]]:
+    """游戏数据文件的提取（独立文件模式，整文件原子重写）。"""
     project = new_project(exe_path, file_sha256(exe_path),
-                          exe_path.stat().st_size, "qm")
-    project.target["kind"] = "qm"
-    entries = QtAdapter().extract(exe_path.name, data)
-    project.resources_seen = {"QM": 1}
-    project.target["resource_refs"] = [["QM", exe_path.name, 0]]
+                          exe_path.stat().st_size, fmt.name)
+    project.target["kind"] = fmt.name
+    entries = fmt.extract(exe_path.name, data)
+    project.resources_seen = {fmt.display: 1}
+    project.target["resource_refs"] = [[fmt.name, exe_path.name, 0]]
     project.entries = entries
     project.save(out)
-    say(f"解析 QM {exe_path.name}：{len(data)} 字节 → {len(entries)} 条")
+    say(f"解析 {fmt.display} {exe_path.name}：{len(data)} 字节 → "
+        f"{len(entries)} 条")
     return project, []
 
 
-def _run_extract_unity(exe_path: Path, out: str | Path,
-                       say) -> tuple[Project, list[str]]:
-    """Unity .assets（TextAsset）的提取（独立文件模式）。"""
-    from .adapters.unity import UnityAssetsAdapter
-    data = exe_path.read_bytes()
-    project = new_project(exe_path, file_sha256(exe_path),
-                          exe_path.stat().st_size, "unity")
-    project.target["kind"] = "unity"
-    entries = UnityAssetsAdapter().extract(exe_path.name, data)
-    project.resources_seen = {"UNITY_TextAsset": len(entries)}
-    project.target["resource_refs"] = [["UNITY", exe_path.name, 0]]
+def _run_extract_folder(folder: Path, out: str | Path,
+                        say) -> tuple[Project, list[str]]:
+    """游戏文件夹的提取（文件夹模式：一个工程对应多个数据文件）。
+
+    扫描目录下全部可识别的游戏数据文件，逐个提取；产出条目的
+    context["file"] 记录相对路径，回写按文件分组。
+    """
+    from .adapters.gamefiles import scan_game_folder
+    from .errors import ParseError
+
+    say(f"扫描游戏文件夹：{folder}")
+    candidates = scan_game_folder(folder, progress=lambda rel, fmt:
+                                  say(f"  发现 {fmt.display}：{rel}"))
+    if not candidates:
+        raise ZhresError(
+            f"在 {folder} 中未发现可识别的游戏数据文件"
+            "（支持 RPG Maker MV/MZ 的 data/*.json、GameMaker data.win、"
+            "Unity .assets/.bundle、RGSS 档案、TXT/INI/CSV 等）")
+    project = new_project(folder, "", folder.stat().st_size, "folder")
+    project.target["kind"] = "folder"
+    project.target["files"] = []
+    entries: list[Entry] = []
+    warnings: list[str] = []
+    seen: dict[str, int] = {}
+    for rel, fmt in candidates:
+        path = folder / rel
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            warnings.append(f"读取失败（{rel}）：{exc}")
+            continue
+        try:
+            es = fmt.extract(rel, data)
+        except ParseError as exc:
+            msg = f"解析失败（{fmt.display} {rel}）：{exc}"
+            warnings.append(msg)
+            continue
+        if not es:
+            continue
+        import hashlib
+        sha = hashlib.sha256(data).hexdigest()
+        project.target["files"].append({
+            "rel": rel, "fmt": fmt.name, "sha256": sha, "size": len(data),
+            "backup_path": None, "backup_sha256": None,
+        })
+        for e in es:
+            e.context["file"] = rel
+        entries.extend(es)
+        seen[fmt.display] = seen.get(fmt.display, 0) + 1
+        say(f"解析 {fmt.display} {rel}：{len(data)} 字节 → {len(es)} 条")
+    if not entries:
+        raise ZhresError(
+            f"在 {folder} 中找到 {len(candidates)} 个数据文件，"
+            "但没有提取到可翻译文本")
+    seen_keys = [e.id for e in entries]
+    if len(seen_keys) != len(set(seen_keys)):
+        raise ZhresError("内部错误：条目 id 重复，请报告此问题")
+    project.resources_seen = seen
+    project.target["resource_refs"] = [["FOLDER", folder.name, 0]]
     project.entries = entries
     project.save(out)
-    say(f"解析 Unity .assets {exe_path.name}：{len(data)} 字节 → "
-        f"{len(entries)} 条 TextAsset")
-    return project, []
+    say(f"文件夹提取完成：{len(project.target['files'])} 个文件，"
+        f"{len(entries)} 条")
+    return project, warnings
 
 
 def cmd_extract(args, config: dict) -> int:
@@ -373,9 +425,10 @@ def cmd_writeback(args, config: dict) -> int:
 
     wb_config = config.get("writeback", {})
     exe = args.exe or project.target.get("path")
+    is_folder = project.target.get("kind") == "folder"
 
-    # 完整性核对
-    if not args.force and exe and Path(exe).is_file():
+    # 完整性核对（文件夹模式无整体哈希，逐文件核对在回写内进行）
+    if not args.force and not is_folder and exe and Path(exe).is_file():
         current = file_sha256(exe)
         if current != project.target.get("sha256"):
             print(f"错误：目标文件与工程记录不一致（SHA-256 不符）：{exe}\n"
@@ -383,11 +436,13 @@ def cmd_writeback(args, config: dict) -> int:
                   file=sys.stderr)
             return EXIT_TARGET
 
-    if not args.no_backup:
+    if not args.no_backup and not is_folder:
         from pathlib import Path as _P
         backup, bak_sha = make_backup(_P(exe), project)
         print(f"已备份：{backup}（SHA-256 校验通过）")
         project.save(args.project)
+    elif is_folder:
+        print("文件夹模式：逐文件自动备份。")
     else:
         print("警告：--no-backup 已指定，不创建备份。", file=sys.stderr)
 
@@ -434,6 +489,34 @@ def cmd_verify(args, config: dict) -> int:
 def cmd_restore(args, config: dict) -> int:
     from .restore import find_backup, restore
     exe = Path(args.exe)
+
+    # 文件夹模式：按工程记录逐文件还原
+    if exe.is_dir():
+        project_path = Path(str(exe) + ".zhres-project.json")
+        if not project_path.is_file():
+            print(f"错误：找不到工程文件：{project_path}", file=sys.stderr)
+            return EXIT_TARGET
+        project = _load_project(project_path)
+        if project.target.get("kind") != "folder":
+            print("错误：该工程不是文件夹模式。", file=sys.stderr)
+            return EXIT_USAGE
+        if not args.yes:
+            try:
+                answer = input(
+                    f"确认还原 {len(project.target.get('files', []))} 个"
+                    "文件？(y/N) ")
+            except EOFError:
+                answer = ""
+            if answer.strip().lower() != "y":
+                print("已取消。")
+                return EXIT_OK
+        from .restore import restore_folder
+        results = restore_folder(project)
+        for r in results:
+            print(f"  {r.target} ← {r.backup}")
+        print(f"还原完成：{len(results)} 个文件（SHA-256 校验通过）")
+        return EXIT_OK
+
     backup = args.backup or find_backup(exe)
     print(f"目标：{exe}")
     print(f"备份：{backup}")

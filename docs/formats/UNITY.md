@@ -79,3 +79,42 @@ UnityPy 报 "Expected to read N bytes"）。
 - UnityFS / UnityWeb 包裹文件（LZ4/LZMA 压缩）暂不支持
 - MonoBehaviour 内嵌字符串（TextMeshPro m_text 等）暂不支持
 - IL2CPP 元程（global-metadata.dat）体系完全不同，不适用
+
+## SerializedFile v15–21（Unity 2017–2021，全小端）
+
+v2 游戏适配扩展覆盖的旧版本族。与 v22 的差异（依据 UnityPy
+SerializedFile.py / ObjectReader.py 逐字段对照）：
+
+```
+u32  metadata_size      @0
+u32  file_size          @4
+u32  version            @8   （15–21；v22 此处为大端 i32）
+u32  data_offset        @12  （实测一般为 0）
+u8   endian             @16  （0 = 小端）
+3 字节 reserved
+strz unity_version
+i32  target_platform
+u8   enable_type_tree
+i32  type_count
+[类型表]                     v<16 无 isStrippedType；v≥17 多 scriptTypeIndex；
+                             script_id（Hash128）仅 v≥16 且 class_id==114
+                             （v<16 时为 class_id<0）
+i32  object_count
+[对象表]                     每项：align4 → i64 path_id → u32 byte_start（绝对）
+                             → u32 byte_size → i32 type_id
+                             v15/16 额外：i16 scriptTypeIndex + u8 isStripped
+（script types / externals / ref types 在对象表之后，本工具不读）
+```
+
+- `byte_start` 为**绝对文件偏移**（v22 是相对 data_offset 的 i64）
+- v15–21 头部**没有** fileSize 之外的扩展字段；回写追加数据后把
+  `@4` 的 fileSize 同步（仅当原值等于原文件长度）
+- 对象表 byte_size 字段在 `byte_start` 后 **4 字节**（v22 是 8）——
+  就地修补时两者偏移不同，UnityObject.entry_size_off 区分
+
+## 回写（v15–22 通用）
+
+追加式：新对象数据写到文件尾（4 字节对齐），就地修补对象表的
+byte_start/byte_size；v22 另更新头部 fileSize（大端 i64 @0x18）。
+老数据成为死区。与 .NET PE 手术同思路，已通过 v15/16/17/19/21/22
+合成样本 round-trip 测试（tests/test_gamefiles.py）。

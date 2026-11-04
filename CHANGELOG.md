@@ -1,5 +1,50 @@
 # 更新日志
 
+## 游戏引擎适配（2026-11-05，除 UE 外主流引擎）
+
+### 新增
+
+- **游戏数据文件注册表**（`adapters/gamefiles.py`）：七类格式的
+  统一检测与分发（廉价兴趣判断 + 完整解析验证）；单文件与文件夹
+  双模式；扫描自动跳过 zhres 自身产物（备份/工程/临时文件）。
+- **文件夹模式**：`zhres extract <游戏文件夹>`（或 GUI
+  「游戏文件夹…」）扫描整个游戏目录合并为一个翻译工程；回写
+  逐文件备份、全部就绪才写盘、任一失败自动回滚；verify/restore
+  同步支持（restore 按工程记录逐文件还原，备份损坏拒绝）。
+- **RPG Maker MV/MZ**：`data/*.json` 全量提取（事件对话/选项/
+  数据库），脚本指令（355/356/108 等）、素材引用、插件命令自动
+  跳过；键序/缩进/尾换行保持，回写前 JSON 复检。
+- **RPG Maker XP/VX/VX Ace**：RGSSAD v1/v3 档案解密/重加密 +
+  Ruby Marshal 4.8 字节级 round-trip（按 ruby/ruby marshal.c 实现，
+  算法经外部参考实现测试档案验证）；Scripts 整体跳过；散装
+  .rxdata/.rvdata2 支持。
+- **GameMaker**：`data.win` STRG 全量字符串；原位缩短替换回写
+  （引用地址不变，超长译文明确拒绝；条目记录 max_len 预算）。
+- **Unity 扩展**：SerializedFile **v15–21**（Unity 2017–2021，小端
+  头，对象表多 scriptTypeIndex/isStripped 字段）与 v22 并存；
+  **UnityFS 包裹**（.bundle）整体解包重建为未压缩块——纯 Python
+  LZ4 块解压器（零第三方依赖）+ 标准库 LZMA raw；UnityCN 加密
+  明确拒绝。
+- **文本类兜底**：TXT 保守行提取（代码特征字符/标签行/赋值行
+  不碰）、INI 键值（只改值、空白逐字符保留）、CSV（自研解析器
+  逐格保持引号风格，键列/表头不提取）。
+- **格式笔记**：docs/formats/GAMEJSON / GAMETEXT / GAMEDATA /
+  UNITYFS / RGSS，UNITY.md 扩展 v15–21；决策 D072–D077。
+
+### 测试
+
+- tests/test_gamefiles.py：55 项（Marshal 逐 fixture 字节级
+  round-trip、各格式合成样本端到端、CLI 单文件/文件夹全周期、
+  检测负样本）；全量套件 145+ 通过。
+
+### 已知限制
+
+- GameMaker 回写仅支持"译文 ≤ 原文"的原位缩短替换（绝对偏移
+  引用的安全边界）；RPG Maker XP/VX 日文数据按 GBK 解码会出现
+  乱码条目（噪音）；UnityCN 加密包裹、类型树 .assets、Godot
+  .translation、Kirikiri .xp3、Wolf RPG、Ren'Py 暂不支持（明确
+  报错或原样保留）。
+
 ## 1.0.0（2026-11-03）
 
 首个正式版本。

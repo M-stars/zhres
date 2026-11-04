@@ -22,6 +22,7 @@ from .writeback import _sha256_file
 
 @dataclass
 class RestoreResult:
+    target: Path = None  # type: ignore[assignment]
     backup: Path = None  # type: ignore[assignment]
     before_restore: Path = None  # type: ignore[assignment]
     current_sha: str = ""
@@ -76,8 +77,8 @@ def restore(exe: str | Path, backup: str | Path | None = None,
                     f"  期望 {recorded}\n  实际 {backup_sha}\n"
                     "已拒绝还原，当前文件未受影响。")
 
-    result = RestoreResult(backup=bak, current_sha=current_sha,
-                           backup_sha=backup_sha)
+    result = RestoreResult(target=target, backup=bak,
+                           current_sha=current_sha, backup_sha=backup_sha)
 
     # 当前文件另存（防止还原错对象）
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -100,3 +101,39 @@ def restore(exe: str | Path, backup: str | Path | None = None,
         raise WritebackError(
             f"还原后校验失败（SHA-256 不一致）：{target}")
     return result
+
+
+def restore_folder(project: Project) -> list[RestoreResult]:
+    """文件夹模式还原：迭代工程记录的全部文件。
+
+    - 任一文件缺失/备份缺失：警告跳过（其余照常还原）
+    - 备份 SHA-256 与工程记录不符：拒绝还原该文件（备份损坏防护）
+    """
+    from pathlib import Path as _P
+
+    root = _P(str(project.target.get("path", "")))
+    files = project.target.get("files") or []
+    if not root or not files:
+        raise WritebackError("工程内没有文件夹模式的目标文件记录")
+    results: list[RestoreResult] = []
+    for info in files:
+        rel = info.get("rel", "")
+        target = root / rel
+        if not target.is_file():
+            continue
+        bak = find_backup(target)
+        backup_sha = _sha256_file(bak)
+        recorded = info.get("backup_sha256")
+        recorded_path = info.get("backup_path")
+        if recorded and recorded_path and \
+                _P(recorded_path).resolve() == bak.resolve() and \
+                recorded != backup_sha:
+            raise WritebackError(
+                f"备份文件已损坏（SHA-256 与工程记录不符）：{bak}\n"
+                f"  文件：{rel}\n  期望 {recorded}\n  实际 {backup_sha}\n"
+                "已拒绝还原，其余文件未受影响。")
+        result = restore(target, bak, yes=True)
+        results.append(result)
+    if not results:
+        raise WritebackError("没有可还原的文件（目标均不存在）")
+    return results

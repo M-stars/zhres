@@ -83,6 +83,9 @@ class GuiApp:
         btn_row.grid(row=0, column=2)
         ttk.Button(btn_row, text="浏览…", command=self._pick_exe).pack(
             side="left")
+        ttk.Button(btn_row, text="游戏文件夹…",
+                   command=self._pick_game_folder).pack(side="left",
+                                                        padx=(4, 0))
         ttk.Button(btn_row, text="扫描本机软件",
                    command=self._open_software_picker).pack(side="left",
                                                             padx=(4, 0))
@@ -405,6 +408,18 @@ class GuiApp:
                        ("所有文件", "*.*")])
         if path:
             self.var_project.set(path)
+
+    def _pick_game_folder(self) -> None:
+        """游戏文件夹提取：选择目录后自动扫描全部数据文件。"""
+        folder = filedialog.askdirectory(
+            title="选择游戏文件夹（RPG Maker / Unity / GameMaker 等）")
+        if not folder:
+            return
+        self.var_exe.set(folder)
+        if not self.var_project.get():
+            self.var_project.set(folder.rstrip("/\\") +
+                                 ".zhres-project.json")
+        self.on_extract()
 
     def _pick_tm(self) -> None:
         path = filedialog.asksaveasfilename(title="选择/新建翻译记忆数据库",

@@ -41,7 +41,7 @@ Windows PE 文件的界面文本存放在资源段（.rsrc）中。zhres 用系�
               zhres restore（一键还原原版，SHA-256 校验）
 ```
 
-支持的资源类型：字符串表（RT_STRING）、菜单（普通模板与 MENUEX）、对话框（DLGTEMPLATE 与 DLGTEMPLATEEX，含字体补丁）、Delphi DFM（RT_RCDATA 中 TPF0 签名）、.NET 托管资源（.resources，WinForms 字符串）、Qt 翻译文件（独立 .qm）、Unity TextAsset（SerializedFile v22）。其他资源一律原样保留；加壳/保护特征检测（节名 + 熵值 + TLS 回调分级）命中时默认拒绝处理。
+支持的资源类型：字符串表（RT_STRING）、菜单（普通模板与 MENUEX）、对话框（DLGTEMPLATE 与 DLGTEMPLATEEX，含字体补丁）、Delphi DFM（RT_RCDATA 中 TPF0 签名）、.NET 托管资源（.resources，WinForms 字符串）、Qt 翻译文件（独立 .qm）、Unity TextAsset（SerializedFile v15–22）、UnityFS 包裹（.bundle，LZ4/LZMA）、GameMaker 数据文件（data.win）、RPG Maker XP/VX/VX Ace（RGSSAD 档案与 Marshal 数据）、JSON/TXT/INI/CSV 游戏数据。其他资源一律原样保留；加壳/保护特征检测（节名 + 熵值 + TLS 回调分级）命中时默认拒绝处理。
 
 ## 安装
 
@@ -67,15 +67,18 @@ zhres-gui                   # 或 zhres gui
 
 1. 点 **「扫描本机软件」** —— 自动列出电脑里安装的程序
    （注册表 + 开始菜单双来源，支持搜索；绿色版/游戏点
-   「扫描指定文件夹」）；双击任一程序**自动完成提取**
+   「扫描指定文件夹」）；双击任一程序**自动完成提取**；
+   游戏也可以直接点 **「游戏文件夹…」** 选目录，自动扫描全部
+   数据文件（RPG Maker / Unity / GameMaker / TXT / INI…）
 2. 在表格里**双击译文列直接翻译**（或点「自动翻译」用翻译记忆/
    术语表——翻译记忆默认 `~/.zhres/tm.db`，自动创建、越用越准）
 3. 点 **「回写」** —— 自动备份原文件 → 写入 → 字体补丁 → 自动校验；
    出问题随时「还原原版」
 
 其余一切自动：耗时操作后台执行、权限不足/程序占用给中文提示、
-翻译记忆自动积累。也支持 .qm（Qt）与 .assets（Unity TextAsset）
-等独立文件——直接浏览选择即可。
+翻译记忆自动积累。也支持 .qm（Qt）、.assets/.bundle（Unity）、
+data.win（GameMaker）、Game.rgss3a（RPG Maker）等独立文件——
+直接浏览选择即可。
 
 进阶：也可以导出/导入 CSV（Excel 直开）走人工翻译，或接 LLM 自动
 翻译（需配置 API key，默认关闭）。
@@ -161,7 +164,7 @@ zhres writeback 我的软件.zhres-project.json
 
 | 命令 | 参数 | 说明 |
 |---|---|---|
-| `zhres extract <exe>` | `-o <工程.json>`（默认 `<exe>.zhres-project.json`）`--force` | 只读提取。先做壳检测（命中拒绝，`--force` 继续）。输出统计表 |
+| `zhres extract <exe>` | `-o <工程.json>`（默认 `<exe>.zhres-project.json`）`--force` | 只读提取。目标可以是 **exe/dll**（PE/.NET）、**游戏数据文件**（.qm/.assets/.bundle/data.win/.rgss3a/.json…）或**游戏文件夹**（扫描全部数据文件）。先做壳检测（命中拒绝，`--force` 继续）。输出统计表 |
 | `zhres translate <工程>` | `--llm` `--glossary <f>` `--tm <db>` `--batch-size N` `--dry-run` | 合并优先级：approved > human > TM > 术语强制映射 > LLM > 不动。`--dry-run` 打印动作与请求样例，不写文件不联网 |
 | `zhres export <工程>` | `--csv <out.csv>` | 导出 `id,source,translation,status,notes`（UTF-8 with BOM） |
 | `zhres import <工程> <csv>` | `--glossary <f>` `--tm <db>` | id 匹配合并；译文非空置 human；写入 TM；未知 id 警告跳过 |
@@ -217,7 +220,22 @@ Delphi/VC 旧程序的字符串多为 ANSI，按系统代码页（简中环境 =
 直接支持。zhres 识别 RT_RCDATA 中以 `TPF0` 开头的 DFM 资源（Delphi 窗体），提取 `Caption` `Text` `Hint` `SimpleText` `Title` 属性与 `Lines.Strings` / `Items.Strings` 字符串列表（id 形如 `Form1/Lines/3`、`Form1/Button1/Caption`）。回写按原值类型编码（vaString 走 GBK，vaWString 走 UTF-16，vaUTF8String 走 UTF-8），未涉及的属性逐字节保持——含 vaBinary/vaCollection 的复杂窗体也已通过字节级 round-trip 验证。Lazarus/FreePascal 程序同格式兼容。
 
 **Q：哪些程序类型不支持？**
-WPF 的 BAML、Electron（asar/pak）、Java、Unity 的 MonoBehaviour 内嵌字符串与 UnityFS 包裹文件、Unreal 等暂不支持，遇到时按不认识的资源原样保留并跳过，不会损坏文件。扩展点见 `docs/architecture.md`。
+WPF 的 BAML、Electron（asar/pak）、Java、Unity 的 MonoBehaviour 内嵌
+字符串与类型树文件、UnityCN 加密包裹、Godot `.translation`、Kirikiri
+`.xp3`、Wolf RPG、Ren'Py、SRPG Studio、Unreal 等暂不支持，遇到时按
+不认识的资源原样保留并跳过，不会损坏文件。扩展点见
+`docs/architecture.md`。
+
+**Q：GameMaker 游戏的短 UI 文本为什么回写失败？**
+GameMaker 的字符串被全文件绝对偏移引用，zhres 只做"原位缩短替换"
+（译文 UTF-8 字节 ≤ 原文才写入，条目上有 max_len 预算）。"Start"
+（5 字节）译成"开始"（6 字节）就会超限——请换更短的译法（如
+"启程"）；长对话框句子通常富余充足。这是不破坏文件的安全边界。
+
+**Q：RPG Maker XP/VX 的日文游戏提取出来是乱码？**
+XP/VX（Ruby 1.8）的数据没有编码标记，zhres 按简中汉化惯例用 GBK
+解码，日文原文会显示为乱码条目——忽略它们即可，不影响正常条目。
+VX Ace（.rvdata2）是 UTF-8，无此问题。
 
 **Q：回写失败会弄坏文件吗？**
 不会。回写通过 `BeginUpdateResourceW/UpdateResourceW/EndUpdateResourceW` 系统 API 完成：任一三元组失败立即 `EndUpdateResourceW(TRUE)` 丢弃全部修改，目标文件保持原样（有自动化测试覆盖此路径）；此外回写前强制备份，失败后可 `restore`。
@@ -251,18 +269,43 @@ WPF 的 BAML、Electron（asar/pak）、Java、Unity 的 MonoBehaviour 内嵌字
 - **Qt**：对独立 `.qm` 翻译文件（Qt 程序 `translations/` 目录常见）
   直接 extract/import/writeback/verify（整文件原子重写，可变长）。
   已用 PySide6 真实样本验证。qrc 内嵌 .qm 暂不支持。
-- **Unity**：对 SerializedFile v22（Unity 2022+/团结引擎）的
-  `.assets` 文件提取/回写 **TextAsset**（本地化 JSON/CSV、剧情文本
-  常见载体）；追加式对象重写，UnityPy 交叉验证。类型树文件与
-  UnityFS 包裹暂不支持。
+- **Unity**：对 SerializedFile v15–21（Unity 2017–2021）与 v22
+  （Unity 2022+/团结引擎）的 `.assets` 文件提取/回写 **TextAsset**
+  （本地化 JSON/CSV、剧情文本常见载体）；追加式对象重写。
+  **UnityFS 包裹**（`.bundle`，LZ4/LZMA 压缩块）整体解包重建，
+  纯 Python LZ4 解压器（零依赖）；UnityCN 加密包裹明确拒绝。
+  类型树文件（enableTypeTree=1）暂不支持。
 - **壳/保护检测 v2**：节名黑名单之外，新增可执行节熵值分析（加密/
   压缩特征 → 拒绝）、TLS 回调检测（自校验/反调试警告）、overlay
   识别。分级：clean / suspicious（警告）/ packed（默认拒绝）。
 
+## 游戏引擎适配（v2 新增，除 UE 外主流引擎）
+
+`zhres extract <游戏文件夹>` 一步扫描整个游戏目录（或用 GUI 的
+「游戏文件夹…」按钮），自动识别全部数据文件并合并为一个翻译工程；
+回写时逐文件自动备份、任一失败自动回滚。也支持直接提取单个数据
+文件（如 `data.win`、`Game.rgss3a`）。
+
+| 引擎 / 格式 | 提取 | 回写 | 说明 |
+|---|---|---|---|
+| **RPG Maker MV/MZ**（`data/*.json`） | ✅ | ✅ | 事件对话/选项/数据库全量；脚本指令、素材名、插件命令自动跳过 |
+| **RPG Maker XP/VX/VX Ace**（`Game.rgssad/.rgss3a`、`.rxdata`） | ✅ | ✅ | Ruby Marshal 字节级 round-trip；档案重加密；Scripts 整体跳过 |
+| **GameMaker**（`data.win` 等） | ✅ | ✅* | 全部字符串（STRG 池）；回写为原位缩短替换（译文 UTF-8 ≤ 原文，超长拒绝并提示） |
+| **Unity**（`.assets` v15–22、`.bundle`） | ✅ | ✅ | TextAsset（本地化 JSON/CSV、剧情文本）；UnityCN 加密包裹拒绝 |
+| **Tyrano / 自研引擎**（`.ks`、`.txt`） | ✅ | ✅ | 保守行提取：标签行/赋值行/注释行不碰 |
+| **通用**（`.ini`、`.csv`、`.json`） | ✅ | ✅ | INI 只改值；CSV 保引号风格；Godot 翻译表可用 |
+| Godot `.translation`、Kirikiri `.xp3`、Wolf RPG、Ren'Py、SRPG Studio、Flash | ❌ | ❌ | 明确不识别、原样保留（v2 路线见下） |
+
+带壳/加密的游戏档案（UnityCN、加壳 exe）与完整性自校验程序同样
+默认拒绝处理（见 FAQ）。游戏汉化涉及的数据文件格式繁多，zhres 的
+原则是：**不认识的格式一律原样保留并明确告知，绝不盲目改写**。
+
 ## v2 路线（候选）
 
 RT_VERSION / RT_ACCELERATORS 翻译、WPF BAML、Electron（asar/pak）、
-qrc 内嵌 .qm、ManifestResource 名字解析、控件布局微调、TM 相似度匹配（编辑距离）。
+qrc 内嵌 .qm、ManifestResource 名字解析、控件布局微调、TM 相似度匹配（编辑距离）、
+Kirikiri `.xp3` / Wolf RPG / Ren'Py / SRPG Studio 游戏档案、
+Godot `.translation`、Unity MonoBehaviour 内嵌字符串（需类型树）。
 
 ## 许可与法律
 

@@ -35,6 +35,80 @@ class WritebackResult:
     verify_problems: list[str] = field(default_factory=list)
 
 
+def _writeback_folder(project: Project, root: Path, project_path,
+                      result: "WritebackResult", *,
+                      force: bool = False) -> "WritebackResult":
+    """文件夹模式回写：先逐文件生成新内容（全部成功才动磁盘），
+    再逐文件备份 + 原子替换；任一写入失败，把已写文件从备份还原。"""
+    import hashlib
+
+    from .adapters.gamefiles import format_by_name
+
+    root = Path(root)
+    files = {f["rel"]: f for f in project.target.get("files", [])}
+    by_file: dict[str, list] = {}
+    for e in project.entries:
+        if e.status in WRITABLE_STATUSES and e.translation is not None:
+            rel = e.context.get("file")
+            if rel is None:
+                raise WritebackError(f"条目缺少 file 上下文：{e.id}")
+            by_file.setdefault(rel, []).append(e)
+    if not by_file:
+        raise WritebackError("工程内没有可写回的已翻译条目")
+
+    new_blobs: dict[str, bytes] = {}
+    for rel, es in by_file.items():
+        info = files.get(rel)
+        if info is None:
+            raise WritebackError(f"文件不在工程记录中：{rel}")
+        path = root / rel
+        if not path.is_file():
+            raise WritebackError(f"目标文件不存在：{path}")
+        data = path.read_bytes()
+        current = _sha256_file(path)
+        if current != info.get("sha256") and not force:
+            raise WritebackError(
+                f"目标文件与工程记录不一致（SHA-256 不符）：{path}\n"
+                "文件可能已被修改或替换。如确认要继续，请使用 --force。")
+        fmt = format_by_name(info["fmt"])
+        if fmt is None:
+            raise WritebackError(f"未知的文件格式：{info['fmt']}")
+        new = fmt.apply(es, data)
+        if new != data:
+            new_blobs[rel] = new
+    if not new_blobs:
+        raise WritebackError("工程内没有可写回的已翻译条目")
+
+    written: list[tuple[Path, Path]] = []
+    try:
+        for rel, new in new_blobs.items():
+            path = root / rel
+            backup, sha = make_backup(path, project)
+            info = files[rel]
+            info["backup_path"] = str(backup)
+            info["backup_sha256"] = sha
+            tmp = path.with_suffix(path.suffix + ".zhres-tmp")
+            tmp.write_bytes(new)
+            tmp.replace(path)
+            written.append((path, backup))
+    except Exception:
+        # 回滚已写文件（尽力而为），目标状态回到回写前
+        for path, backup in reversed(written):
+            try:
+                shutil.copy2(backup, path)
+            except OSError:
+                pass
+        raise
+
+    result.changed_resources = len(new_blobs)
+    if project_path:
+        project.save(project_path)
+    vr = verify_project(project, root)
+    result.verify_ok = vr.ok
+    result.verify_problems = vr.problems
+    return result
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -82,12 +156,16 @@ def writeback(project: Project, exe: str | Path | None = None, *,
     project_path：工程 JSON 保存路径（默认 <exe>.zhres-project.json）。
     """
     target = Path(exe) if exe else Path(project.target["path"])
-    if not target.is_file():
+    if project.target.get("kind") == "folder":
+        if not target.is_dir():
+            raise WritebackError(f"目标文件夹不存在：{target}")
+    elif not target.is_file():
         raise WritebackError(f"目标文件不存在：{target}")
 
-    # 目标文件完整性核对
-    current_sha = _sha256_file(target)
-    if current_sha != project.target.get("sha256") and not force:
+    # 目标文件完整性核对（文件夹模式无整体哈希，逐文件核对见下）
+    current_sha = _sha256_file(target) if target.is_file() else None
+    if current_sha is not None and \
+            current_sha != project.target.get("sha256") and not force:
         raise WritebackError(
             f"目标文件与工程记录不一致（SHA-256 不符）：{target}\n"
             "文件可能已被修改或替换。如确认要继续，请使用 --force。")
@@ -95,36 +173,21 @@ def writeback(project: Project, exe: str | Path | None = None, *,
     result = WritebackResult()
     registry = build_default_registry()
 
-    # ---- 独立文件模式（QM / Unity .assets）：整文件原子重写 ----
-    if project.target.get("kind") in ("qm", "unity"):
-        if project.target.get("kind") == "unity":
-            from .adapters.unity import UnityAssetsAdapter
-            adapter_cls = UnityAssetsAdapter
-        else:
-            from .adapters.qt import QtAdapter as adapter_cls
-        original = target.read_bytes()
-        new_data = adapter_cls().apply(project.entries, original)
-        if new_data == original:
-            raise WritebackError("工程内没有可写回的已翻译条目")
-        backup, _sha = make_backup(target, project)
-        result.changed_resources = 1
-        tmp = target.with_suffix(target.suffix + ".zhres-tmp")
-        tmp.write_bytes(new_data)
-        tmp.replace(target)
-        project.target["backup_path"] = str(backup)
-        project.target["backup_sha256"] = _sha256_file(backup)
-        if project_path:
-            project.save(project_path)
-        vr = verify_project(project, target)
-        result.verify_ok = vr.ok
-        result.verify_problems = vr.problems
-        return result
+    # ---- 游戏文件夹模式：逐文件应用 → 全部就绪后备份+原子替换 ----
+    if project.target.get("kind") == "folder":
+        return _writeback_folder(project, target, project_path, result,
+                                 force=force)
 
-    # ---- QM 翻译文件模式（独立文件，整文件原子重写）----
-    if project.target.get("kind") == "qm":
-        from .adapters.qt import QtAdapter
+    # ---- 游戏数据文件（QM/Unity/JSON/文本/GameMaker/RGSS 等）----
+    # 独立文件模式：整文件原子重写
+    if project.target.get("kind"):
+        from .adapters.gamefiles import format_by_name
+        fmt = format_by_name(project.target["kind"])
+        if fmt is None:
+            raise WritebackError(
+                f"未知的独立文件格式：{project.target['kind']}")
         original = target.read_bytes()
-        new_data = QtAdapter().apply(project.entries, original)
+        new_data = fmt.apply(project.entries, original)
         if new_data == original:
             raise WritebackError("工程内没有可写回的已翻译条目")
         backup, _sha = make_backup(target, project)
